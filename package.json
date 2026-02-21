@@ -10,7 +10,9 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "firebase": "npx firebase-tools",
+    "firebase:deploy": "npx firebase-tools deploy --only functions"
   },
   "dependencies": {
     "@radix-ui/react-accordion": "^1.2.11",
@@ -55,6 +57,7 @@
     "tailwindcss-animate": "^1.0.7"
   },
   "devDependencies": {
+    "firebase-tools": "^13.0.0",
     "@eslint/js": "^9.32.0",
     "@tailwindcss/typography": "^0.5.16",
     "@testing-library/jest-dom": "^6.6.0",

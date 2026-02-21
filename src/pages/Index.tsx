@@ -20,7 +20,11 @@ import ThemeToggle from '@/components/ThemeToggle';
 import RouteSafetyPanel from '@/components/RouteSafetyPanel';
 import HeatmapLegend from '@/components/HeatmapLegend';
 import WalkWithMe from '@/components/WalkWithMe';
+
 import SafetyChatWidget from '@/components/SafetyChatWidget';
+
+import { EmergencyCallModal } from '@/components/EmergencyCallModal';
+
 import { geocodeLocation, fetchSafetyScore, fetchRouteAnalysis, fetchCitizenHotspots, type FullSafetyResponse, type HeatmapPoint } from '@/lib/api';
 import { useTheme } from '@/hooks/useTheme';
 import {
@@ -102,6 +106,9 @@ const Index = () => {
 
   // Mobile bottom sheet state: collapsed shows peek bar, expanded shows full panels
   const [mobilePanelOpen, setMobilePanelOpen] = useState(false);
+
+  // Emergency call (VAPI) modal
+  const [emergencyCallModalOpen, setEmergencyCallModalOpen] = useState(false);
 
   // Keyboard shortcut: '/' focuses search
   useEffect(() => {
@@ -1037,6 +1044,15 @@ const Index = () => {
                 )}
                 {stateAbbr && <HistoricalTrends state={stateAbbr} expanded={activePanel === 'trends'} />}
                 <EmergencyResources locationName={locationName} numbers={safetyData.emergencyNumbers} expanded={activePanel === 'emergency'} />
+                {activePanel === 'emergency' && locationCoords && (
+                  <button
+                    onClick={() => setEmergencyCallModalOpen(true)}
+                    className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-lumos-danger text-white font-medium hover:bg-lumos-danger/90 active:bg-lumos-danger/80 transition-colors"
+                  >
+                    <Phone className="w-5 h-5" />
+                    Call with LUMOS AI (VAPI)
+                  </button>
+                )}
                 {locationCoords && (
                   <ReportIncident lat={locationCoords.lat} lng={locationCoords.lng} userId={user?.uid} expanded={activePanel === 'report'} />
                 )}
@@ -1186,6 +1202,15 @@ const Index = () => {
                   )}
                   {stateAbbr && <HistoricalTrends state={stateAbbr} expanded={activePanel === 'trends'} />}
                   <EmergencyResources locationName={locationName} numbers={safetyData.emergencyNumbers} expanded={activePanel === 'emergency'} />
+                  {activePanel === 'emergency' && locationCoords && (
+                    <button
+                      onClick={() => setEmergencyCallModalOpen(true)}
+                      className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-lumos-danger text-white font-medium hover:bg-lumos-danger/90 active:bg-lumos-danger/80 transition-colors"
+                    >
+                      <Phone className="w-5 h-5" />
+                      Call with LUMOS AI (VAPI)
+                    </button>
+                  )}
                   {locationCoords && (
                     <ReportIncident lat={locationCoords.lat} lng={locationCoords.lng} userId={user?.uid} expanded={activePanel === 'report'} />
                   )}
@@ -1194,6 +1219,18 @@ const Index = () => {
             )}
           </div>
         </motion.div>
+      )}
+
+      {/* Emergency call modal (VAPI) — shown when user taps "Call with LUMOS AI" */}
+      {locationCoords && safetyData && (
+        <EmergencyCallModal
+          open={emergencyCallModalOpen}
+          onOpenChange={setEmergencyCallModalOpen}
+          lat={locationCoords.lat}
+          lng={locationCoords.lng}
+          address={locationName}
+          safetyScore={safetyData.safetyIndex}
+        />
       )}
 
       {/* Results: Route */}
