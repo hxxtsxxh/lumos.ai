@@ -352,10 +352,20 @@ def compute_heatmap_from_incidents(incidents: list[dict], center_lat: float, cen
                 continue
             if abs(lat - center_lat) > radius or abs(lng - center_lng) > radius:
                 continue
-            crime_type = str(inc.get("type", "Unknown")).strip().title()
+            raw_type = inc.get("type") or ""
+            crime_type = str(raw_type).strip()
+            if not crime_type or crime_type in ("0", "None", "Null", "N/A"):
+                crime_type = "Unknown"
+            elif crime_type.upper() in _NIBRS_CODE_TO_NAME:
+                crime_type = _NIBRS_CODE_TO_NAME[crime_type.upper()]
+            elif crime_type.isdigit() and len(crime_type) <= 2:
+                crime_type = "Unknown"
+            else:
+                crime_type = crime_type.title()
             date_str = inc.get("date") or inc.get("incident_date")
             date_str = str(date_str).strip()[:19] if date_str else None
-            valid.append((lat, lng, crime_type, date_str))
+            source = inc.get("source", "")
+            valid.append((lat, lng, crime_type, date_str, source))
         except (ValueError, TypeError):
             continue
 
@@ -366,53 +376,66 @@ def compute_heatmap_from_incidents(incidents: list[dict], center_lat: float, cen
     if len(valid) <= max_points:
         max_dist = radius * math.sqrt(2)
         points = []
-        for lat, lng, ctype, date_str in valid:
+        for lat, lng, ctype, date_str, source in valid:
             dist = math.sqrt((lat - center_lat) ** 2 + (lng - center_lng) ** 2)
             weight = max(0.15, 1.0 - dist / max_dist)
-            pt = {"lat": lat, "lng": lng, "weight": round(weight, 3), "type": ctype}
+            pt = {"lat": lat, "lng": lng, "weight": round(weight, 3), "type": ctype, "source": source}
             if date_str:
                 pt["date"] = date_str
             points.append(pt)
         return points
 
     # Grid-based density aggregation for large datasets
+    import random
     cell_lat = (2 * radius) / grid_size
     cell_lng = (2 * radius) / grid_size
 
     grid: dict[tuple[int, int], list] = defaultdict(list)
-    for lat, lng, ctype, date_str in valid:
+    for lat, lng, ctype, date_str, source in valid:
         row = int((lat - (center_lat - radius)) / cell_lat)
         col = int((lng - (center_lng - radius)) / cell_lng)
         row = min(row, grid_size - 1)
         col = min(col, grid_size - 1)
-        grid[(row, col)].append((lat, lng, ctype, date_str))
+        grid[(row, col)].append((lat, lng, ctype, date_str, source))
 
     if not grid:
         return []
 
     max_count = max(len(v) for v in grid.values())
+    rng = random.Random(42)
     points = []
     for (row, col), cell_incidents in grid.items():
         count = len(cell_incidents)
         weight = max(0.05, count / max_count)
-        cell_center_lat = center_lat - radius + (row + 0.5) * cell_lat
-        cell_center_lng = center_lng - radius + (col + 0.5) * cell_lng
 
-        # Find the dominant crime type and most recent date in this cell
+        # Use mean of actual incident positions instead of cell center,
+        # with a small jitter to break any remaining grid artifacts
+        mean_lat = sum(lat for lat, *_ in cell_incidents) / count
+        mean_lng = sum(lng for _, lng, *_ in cell_incidents) / count
+        jitter_lat = rng.gauss(0, cell_lat * 0.15)
+        jitter_lng = rng.gauss(0, cell_lng * 0.15)
+        pt_lat = mean_lat + jitter_lat
+        pt_lng = mean_lng + jitter_lng
+
         type_counts: dict[str, int] = defaultdict(int)
+        source_counts: dict[str, int] = defaultdict(int)
         dates: list[str] = []
-        for _, _, ctype, date_str in cell_incidents:
+        for _, _, ctype, date_str, source in cell_incidents:
             type_counts[ctype] += 1
+            if source:
+                source_counts[source] = source_counts.get(source, 0) + 1
             if date_str:
                 dates.append(date_str)
         dominant_type = max(type_counts, key=type_counts.get)  # type: ignore[arg-type]
+        dominant_source = max(source_counts, key=source_counts.get) if source_counts else ""  # type: ignore[arg-type]
         most_recent = max(dates) if dates else None
 
         pt = {
-            "lat": round(cell_center_lat, 5),
-            "lng": round(cell_center_lng, 5),
+            "lat": round(pt_lat, 5),
+            "lng": round(pt_lng, 5),
             "weight": round(weight, 3),
             "type": dominant_type,
+            "source": dominant_source,
         }
         if most_recent:
             pt["date"] = most_recent
@@ -1085,6 +1108,7 @@ async def gemini_enrich_heatmap(
     crime_rate: float = 0.0,
     hour: int = 12,
     incident_types: list[IncidentType] | None = None,
+    live_incident_summary: str = "",
 ) -> list[dict]:
     """Use Gemini to add contextual descriptions to heatmap points.
 
@@ -1128,20 +1152,24 @@ async def gemini_enrich_heatmap(
 
         types_summary = ", ".join(f"{t} ({c} hotspots)" for t, c in sorted(type_counts.items(), key=lambda x: -x[1]))
 
-        prompt = f"""You are a public safety analyst. For each crime/incident type on this heatmap, write a brief (1-2 sentence) contextual description explaining what it means for someone at this location right now.
+        # Build a concentration summary to give Gemini local context
+        total_pts = len(points)
+        top_types = sorted(type_counts.items(), key=lambda x: -x[1])[:5]
+        concentration = ", ".join(f"{t} ({c}/{total_pts}, {100*c//total_pts}%)" for t, c in top_types)
 
-Context:
-- Location: {city_name or 'Unknown'}, {state_abbr or 'US'}
-- Overall crime level: {crime_level} ({crime_rate:.0f}/100k)
-- Current time: {hour}:00 ({time_label})
-- Heatmap incident types: {types_summary}
+        live_context = f"\n- Recent live incidents (last 48h): {live_incident_summary}" if live_incident_summary else ""
 
-For each type, explain:
-1. What this incident typically involves in this area
-2. A practical safety tip specific to this neighborhood and time
+        prompt = f"""For each incident type below, write ONE concise sentence (max 120 characters) describing where/when it typically occurs in this area. Reference well-known landmarks, campuses, districts, or transit hubs — NEVER mention specific street addresses.
 
-Return ONLY valid JSON (no markdown) mapping each incident type to its description:
-{{{', '.join(f'"{t}": "description"' for t in unique_types)}}}"""
+City: {city_name or 'Unknown'}, {state_abbr or 'US'}
+Crime level: {crime_level} ({crime_rate:.0f} per 100k)
+Time: {hour}:00 ({time_label})
+Breakdown: {concentration}{live_context}
+
+Example format: "Common near university campuses and transit stations, especially after dark."
+
+Return ONLY valid JSON mapping each type to its sentence:
+{{{', '.join(f'"{t}": "sentence"' for t in unique_types)}}}"""
 
         result = model.generate_content(
             prompt,
@@ -1157,8 +1185,14 @@ Return ONLY valid JSON (no markdown) mapping each incident type to its descripti
 
         descriptions = json.loads(text)
 
-        # Validate: ensure all values are strings
-        descriptions = {k: str(v)[:200] for k, v in descriptions.items() if isinstance(v, str)}
+        def _truncate(s: str, limit: int = 150) -> str:
+            s = str(s).strip()
+            if len(s) <= limit:
+                return s
+            truncated = s[:limit].rsplit(" ", 1)[0]
+            return truncated.rstrip(".,;:") + "…"
+
+        descriptions = {k: _truncate(v) for k, v in descriptions.items() if isinstance(v, str)}
 
         with _HEATMAP_GEMINI_LOCK:
             _HEATMAP_GEMINI_CACHE[cache_key] = descriptions

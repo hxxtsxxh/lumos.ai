@@ -654,6 +654,101 @@ async def _discover_socrata_dataset_from_odn(city: str) -> dict | None:
         logger.warning(f"ODN discovery failed for {city}: {e}")
         
     return None
+
+
+# ─────────────────────── Socrata Catalog Fallback ───────────────
+
+_socrata_catalog_cache: list[dict] | None = None
+
+def _load_socrata_catalog() -> list[dict]:
+    """Load datasets from the pre-built socrata_catalog.json (produced by collect_socrata_incidents.py)."""
+    global _socrata_catalog_cache
+    if _socrata_catalog_cache is not None:
+        return _socrata_catalog_cache
+
+    catalog_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "datasets", "socrata_catalog.json",
+    )
+    if not os.path.exists(catalog_path):
+        _socrata_catalog_cache = []
+        return _socrata_catalog_cache
+
+    try:
+        with open(catalog_path, "r") as f:
+            data = json.load(f)
+        datasets = data.get("datasets", [])
+        valid = [
+            ds for ds in datasets
+            if ds.get("domain") and ds.get("dataset_id")
+            and (ds.get("lat_field") or ds.get("point_field"))
+            and ds.get("type_field")
+        ]
+        _socrata_catalog_cache = valid
+        logger.info(f"Loaded socrata catalog: {len(valid)} valid datasets")
+        return valid
+    except Exception as e:
+        logger.warning(f"Failed to load socrata catalog: {e}")
+        _socrata_catalog_cache = []
+        return []
+
+
+def _find_catalog_endpoint(city: str) -> dict | None:
+    """Search the catalog for a dataset matching a city name and build a Socrata endpoint config."""
+    catalog = _load_socrata_catalog()
+    if not catalog:
+        return None
+
+    city_lower = city.lower().strip()
+    best = None
+    best_score = -1.0
+
+    for ds in catalog:
+        ds_city = (ds.get("city") or "").lower().strip()
+        if not ds_city:
+            continue
+        if ds_city == city_lower or city_lower in ds_city or ds_city in city_lower:
+            score = ds.get("score", 0.0)
+            if score > best_score:
+                best_score = score
+                best = ds
+
+    if not best:
+        return None
+
+    one_year_ago_iso = (datetime.utcnow() - timedelta(days=365)).isoformat()
+    domain = best["domain"]
+    dataset_id = best["dataset_id"]
+
+    select_fields = []
+    for f in [best.get("type_field"), best.get("date_field"),
+              best.get("lat_field"), best.get("lng_field"), best.get("point_field")]:
+        if f and f not in select_fields:
+            select_fields.append(f)
+
+    params = {
+        "$limit": 5000,
+        "$select": ", ".join(select_fields),
+    }
+    if best.get("date_field"):
+        params["$where"] = f"{best['date_field']} > '{one_year_ago_iso}'"
+        params["$order"] = f"{best['date_field']} DESC"
+
+    ep = {
+        "url": f"https://{domain}/resource/{dataset_id}.json",
+        "params": params,
+        "type_field": best.get("type_field", ""),
+        "lat_field": best.get("lat_field", ""),
+        "lng_field": best.get("lng_field", ""),
+        "date_field": best.get("date_field", ""),
+    }
+    if best.get("point_field") and not best.get("lat_field"):
+        ep["geocoded_column"] = best["point_field"]
+
+    logger.info(f"Catalog fallback: matched {city} → {domain}/{dataset_id} (score={best_score})")
+    return ep
+
+
 def _query_local_incidents_db(lat: float, lng: float, radius_deg: float = 0.044,
                               limit: int = 50000) -> list[dict] | None:
     """Query the local SQLite incidents database by geographic proximity.
@@ -691,7 +786,7 @@ def _query_local_incidents_db(lat: float, lng: float, radius_deg: float = 0.044,
 
         incidents = []
         for r_lat, r_lng, crime_type, incident_date in rows:
-            inc = {"lat": r_lat, "lng": r_lng, "type": crime_type or "Unknown"}
+            inc = {"lat": r_lat, "lng": r_lng, "type": crime_type or "Unknown", "source": "Local Incidents DB"}
             if incident_date:
                 inc["date"] = incident_date
             incidents.append(inc)
@@ -727,6 +822,7 @@ async def fetch_city_crime_data(lat: float, lng: float, city: str) -> dict:
     if os.path.exists(city_filename):
         try:
             one_year_ago = (datetime.utcnow() - timedelta(days=365)).strftime("%Y-%m-%d")
+            city_label = city.split(",")[0].strip().title() if city else "City"
             with open(city_filename, 'r') as f:
                 data = json.load(f)
                 raw = data.get("incidents", [])
@@ -734,6 +830,8 @@ async def fetch_city_crime_data(lat: float, lng: float, city: str) -> dict:
                 for inc in raw:
                     if "date" not in inc and inc.get("incident_date"):
                         inc["date"] = inc["incident_date"]
+                    if "source" not in inc:
+                        inc["source"] = f"{city_label} Open Data"
                     d = inc.get("date") or inc.get("incident_date") or ""
                     if not d or str(d)[:10] >= one_year_ago:
                         incidents.append(inc)
@@ -757,6 +855,13 @@ async def fetch_city_crime_data(lat: float, lng: float, city: str) -> dict:
             break
 
     if not matched_key:
+        # Fallback to socrata_catalog.json (pre-built by collect_socrata_incidents.py)
+        catalog_ep = _find_catalog_endpoint(city_lower)
+        if catalog_ep:
+            matched_key = f"catalog_{city_lower}"
+            endpoints[matched_key] = catalog_ep
+
+    if not matched_key:
         # Fallback to dynamic ODN discovery
         dynamic_ep = await _discover_socrata_dataset_from_odn(city_lower)
         if dynamic_ep:
@@ -765,6 +870,7 @@ async def fetch_city_crime_data(lat: float, lng: float, city: str) -> dict:
 
     if matched_key:
         ep = endpoints[matched_key]
+        source_label = ep.get("url", "").split("/")[2] if "url" in ep else f"{matched_key.title()} Open Data"
 
         # Skip endpoints marked as unavailable
         if ep.get("is_unavailable"):
@@ -798,6 +904,7 @@ async def fetch_city_crime_data(lat: float, lng: float, city: str) -> dict:
                                 "type": crime_type,
                                 "lat": float(lat_val) if lat_val else None,
                                 "lng": float(lng_val) if lng_val else None,
+                                "source": source_label,
                             }
                             if date_field and rec.get(date_field):
                                 # ArcGIS may return epoch ms
@@ -823,6 +930,7 @@ async def fetch_city_crime_data(lat: float, lng: float, city: str) -> dict:
                                 "type": crime_type,
                                 "lat": float(lat_val) if lat_val else None,
                                 "lng": float(lng_val) if lng_val else None,
+                                "source": source_label,
                             }
                             # Preserve date field for hourly risk computation
                             if date_field and rec.get(date_field):
@@ -841,6 +949,7 @@ async def fetch_city_crime_data(lat: float, lng: float, city: str) -> dict:
                                 "type": crime_type,
                                 "lat": float(lat_val) if lat_val else None,
                                 "lng": float(lng_val) if lng_val else None,
+                                "source": source_label,
                             }
                             if date_field and rec.get(date_field):
                                 entry["date"] = rec[date_field]
@@ -873,6 +982,7 @@ async def fetch_city_crime_data(lat: float, lng: float, city: str) -> dict:
                                 "type": crime_type,
                                 "lat": float(lat_val) if lat_val else None,
                                 "lng": float(lng_val) if lng_val else None,
+                                "source": source_label,
                             }
                             if date_field and rec.get(date_field):
                                 entry["date"] = rec[date_field]

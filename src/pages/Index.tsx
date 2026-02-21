@@ -20,6 +20,7 @@ import ThemeToggle from '@/components/ThemeToggle';
 import RouteSafetyPanel from '@/components/RouteSafetyPanel';
 import HeatmapLegend from '@/components/HeatmapLegend';
 import WalkWithMe from '@/components/WalkWithMe';
+import LiveIncidents from '@/components/LiveIncidents';
 import { geocodeLocation, fetchSafetyScore, fetchRouteAnalysis, fetchCitizenHotspots, type FullSafetyResponse, type HeatmapPoint } from '@/lib/api';
 import { useTheme } from '@/hooks/useTheme';
 import {
@@ -160,22 +161,29 @@ const Index = () => {
 
       const coordinates = (e.features[0].geometry as any).coordinates.slice();
       const props = e.features[0].properties ?? {};
-      const { type, weight, description } = props;
+      const { weight, description } = props;
+      const rawType = props.type;
+      const type = (rawType && rawType !== '0' && rawType !== 'None') ? rawType : 'Incident';
       const date = props.date ?? props.recentDate ?? '';
+      const source = props.source ?? '';
 
       while (Math.abs(e.lngLat.lng - coordinates[0]) > 180) {
         coordinates[0] += e.lngLat.lng > coordinates[0] ? 360 : -360;
       }
 
-      const riskLevel = weight > 0.6 ? 'High Risk' : weight > 0.3 ? 'Moderate Risk' : 'Low Risk';
-      const riskColor = weight > 0.6 ? '#ef4444' : weight > 0.3 ? '#f59e0b' : '#22c55e';
+      const densityLabel = weight > 0.6 ? 'High concentration' : weight > 0.3 ? 'Moderate concentration' : 'Low concentration';
+      const densityColor = weight > 0.6 ? '#ef4444' : weight > 0.3 ? '#f59e0b' : '#22c55e';
 
       const descHtml = description
-        ? `<div style="font-size: 12px; color: hsl(var(--muted-foreground)); margin-top: 4px; line-height: 1.4; max-width: 240px;">${description}</div>`
+        ? `<div style="font-size: 12px; color: hsl(var(--muted-foreground)); margin-top: 4px; line-height: 1.4; max-width: 260px;">${description}</div>`
         : '';
 
       const dateHtml = date
         ? `<div style="font-size: 11px; color: hsl(var(--muted-foreground)); margin-top: 2px;">Most recent: ${formatIncidentDate(date)}</div>`
+        : '';
+
+      const sourceHtml = source
+        ? `<div style="font-size: 10px; color: hsl(var(--muted-foreground)); margin-top: 3px; opacity: 0.7;">Source: ${source}</div>`
         : '';
 
       popup
@@ -183,11 +191,12 @@ const Index = () => {
         .setHTML(`
           <div style="padding: 6px 8px; font-family: system-ui, sans-serif; color: hsl(var(--foreground));">
             <div style="font-weight: 600; font-size: 14px; margin-bottom: 2px;">${type}</div>
-            <div style="font-size: 12px; color: ${riskColor}; font-weight: 500;">
-              ${riskLevel} (Risk: ${Math.round(weight * 100)}%)
+            <div style="font-size: 12px; color: ${densityColor}; font-weight: 500;">
+              ${densityLabel}
             </div>
             ${dateHtml}
             ${descHtml}
+            ${sourceHtml}
           </div>
         `)
         .addTo(map);
@@ -220,7 +229,9 @@ const Index = () => {
       if (!e.features || e.features.length === 0) return;
       map.getCanvas().style.cursor = 'pointer';
       const coordinates = (e.features[0].geometry as any).coordinates.slice();
-      const { type, weight } = e.features[0].properties as any;
+      const props = e.features[0].properties ?? {};
+      const { type, weight } = props as any;
+      const date = (props as any).date ?? '';
 
       while (Math.abs(e.lngLat.lng - coordinates[0]) > 180) {
         coordinates[0] += e.lngLat.lng > coordinates[0] ? 360 : -360;
@@ -228,6 +239,19 @@ const Index = () => {
 
       const severity = weight > 0.6 ? 'High' : weight > 0.3 ? 'Moderate' : 'Low';
       const sevColor = weight > 0.6 ? '#ef4444' : weight > 0.3 ? '#f59e0b' : '#a855f7';
+
+      let timeHtml = '';
+      if (date) {
+        const d = new Date(date + 'Z');
+        if (!isNaN(d.getTime())) {
+          const diffMin = Math.round((Date.now() - d.getTime()) / 60000);
+          const relative = diffMin < 1 ? 'Just now'
+            : diffMin < 60 ? `${diffMin}m ago`
+            : `${Math.round(diffMin / 60)}h ago`;
+          const clock = d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+          timeHtml = `<div style="font-size: 10px; color: hsl(var(--muted-foreground)); margin-top: 2px;">${clock} (${relative})</div>`;
+        }
+      }
 
       citizenPopup
         .setLngLat(coordinates as [number, number])
@@ -237,6 +261,7 @@ const Index = () => {
             <div style="font-size: 11px; color: ${sevColor}; font-weight: 500;">
               ${severity} Severity &middot; Live Incident
             </div>
+            ${timeHtml}
           </div>
         `)
         .addTo(map);
@@ -984,6 +1009,10 @@ const Index = () => {
                 )}
                 <SafetyDashboard data={safetyData} locationName={locationName} />
 
+                {safetyData.liveIncidents && safetyData.liveIncidents.length > 0 && (
+                  <LiveIncidents incidents={safetyData.liveIncidents} />
+                )}
+
                 {/* Quick-access icon bar */}
                 <div className="glass-panel rounded-2xl p-1.5 sm:p-2">
                   <div className="flex items-center justify-around gap-0.5">
@@ -1017,7 +1046,16 @@ const Index = () => {
                 </div>
 
                 {/* Expandable panel content */}
-                <AISafetyTips data={safetyData} locationName={locationName} params={params} expanded={activePanel === 'tips'} />
+                <AISafetyTips
+                  data={safetyData}
+                  locationName={locationName}
+                  params={params}
+                  expanded={activePanel === 'tips'}
+                  liveIncidents={safetyData.liveIncidents}
+                  nearbyPOIs={safetyData.nearbyPOIs}
+                  neighborhoodContext={safetyData.neighborhoodContext}
+                  sentimentSummary={safetyData.sentimentSummary}
+                />
                 {safetyData.nearbyPOIs && safetyData.nearbyPOIs.length > 0 && (
                   <NearbyPOIs
                     pois={safetyData.nearbyPOIs}
@@ -1133,6 +1171,10 @@ const Index = () => {
                   )}
                   <SafetyDashboard data={safetyData} locationName={locationName} />
 
+                  {safetyData.liveIncidents && safetyData.liveIncidents.length > 0 && (
+                    <LiveIncidents incidents={safetyData.liveIncidents} />
+                  )}
+
                   {/* Quick-access icon bar */}
                   <div className="glass-panel rounded-2xl p-1.5">
                     <div className="flex items-center justify-around gap-0.5">
@@ -1165,7 +1207,16 @@ const Index = () => {
                     </div>
                   </div>
 
-                  <AISafetyTips data={safetyData} locationName={locationName} params={params} expanded={activePanel === 'tips'} />
+                  <AISafetyTips
+                    data={safetyData}
+                    locationName={locationName}
+                    params={params}
+                    expanded={activePanel === 'tips'}
+                    liveIncidents={safetyData.liveIncidents}
+                    nearbyPOIs={safetyData.nearbyPOIs}
+                    neighborhoodContext={safetyData.neighborhoodContext}
+                    sentimentSummary={safetyData.sentimentSummary}
+                  />
                   {safetyData.nearbyPOIs && safetyData.nearbyPOIs.length > 0 && (
                     <NearbyPOIs
                       pois={safetyData.nearbyPOIs}

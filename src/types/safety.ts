@@ -6,6 +6,17 @@ export interface SafetyData {
   dataSources: DataSource[];
 }
 
+export interface LiveIncident {
+  type: string;
+  date: string;
+  lat: number;
+  lng: number;
+  distance_miles: number;
+  source: string;
+  severity: string;
+  headline: string;
+}
+
 export interface IncidentType {
   type: string;
   probability: number;

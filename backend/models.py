@@ -63,7 +63,8 @@ class HeatmapPoint(BaseModel):
     weight: float
     type: str = "Unknown"
     description: str = ""
-    date: Optional[str] = None  # Most recent incident date in this cell/point
+    date: Optional[str] = None
+    source: str = ""
 
 
 class NearbyPOI(BaseModel):
@@ -104,6 +105,17 @@ class WeatherInfo(BaseModel):
     alert_count: int = 0
 
 
+class LiveIncident(BaseModel):
+    type: str
+    date: str = ""
+    lat: float = 0.0
+    lng: float = 0.0
+    distance_miles: float = 0.0
+    source: str = ""
+    severity: str = ""
+    headline: str = ""
+
+
 class SafetyResponse(BaseModel):
     safetyIndex: int
     riskLevel: str
@@ -112,10 +124,13 @@ class SafetyResponse(BaseModel):
     dataSources: list[DataSource]
     hourlyRisk: list[HourlyRisk]
     heatmapPoints: list[HeatmapPoint]
-    heatmapIncidentCount: int = 0  # Incidents in last year within radius (for legend)
+    heatmapIncidentCount: int = 0
     emergencyNumbers: list[dict]
     nearbyPOIs: list[NearbyPOI] = []
     weather: WeatherInfo | None = None
+    liveIncidents: list[LiveIncident] = []
+    sentimentSummary: str = ""
+    neighborhoodContext: str = ""
 
 
 class RouteResponse(BaseModel):
@@ -151,3 +166,7 @@ class AISafetyTipsRequest(BaseModel):
     timeOfTravel: str = "12:00"
     peopleCount: int = 1
     gender: str = "prefer-not-to-say"
+    liveIncidentSummary: str = ""
+    nearbyPOIs: list[str] = []
+    neighborhoodContext: str = ""
+    sentimentSummary: str = ""

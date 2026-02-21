@@ -48,34 +48,35 @@ function _addDensityLayers(map: mapboxgl.Map) {
     type: 'heatmap',
     source: HEATMAP_SOURCE,
     paint: {
-      'heatmap-weight': ['interpolate', ['linear'], ['get', 'weight'], 0, 0, 1, 1],
-      'heatmap-intensity': ['interpolate', ['linear'], ['zoom'], 10, 0.5, 15, 2],
+      'heatmap-weight': ['interpolate', ['linear'], ['get', 'weight'], 0, 0, 0.5, 0.4, 1, 1],
+      'heatmap-intensity': ['interpolate', ['linear'], ['zoom'], 10, 0.4, 13, 0.8, 15, 1.5],
       'heatmap-color': [
         'interpolate',
         ['linear'],
         ['heatmap-density'],
-        0, 'rgba(0, 0, 0, 0)',
-        0.1, 'hsla(174, 62%, 47%, 0.15)',
-        0.3, 'hsla(38, 92%, 55%, 0.3)',
-        0.5, 'hsla(38, 92%, 55%, 0.5)',
-        0.7, 'hsla(15, 80%, 55%, 0.6)',
-        1.0, 'hsla(0, 72%, 55%, 0.7)',
+        0,    'rgba(0, 0, 0, 0)',
+        0.05, 'hsla(174, 62%, 47%, 0.08)',
+        0.15, 'hsla(174, 62%, 47%, 0.2)',
+        0.35, 'hsla(50, 85%, 55%, 0.35)',
+        0.55, 'hsla(38, 92%, 55%, 0.5)',
+        0.75, 'hsla(15, 80%, 55%, 0.6)',
+        1.0,  'hsla(0, 72%, 55%, 0.7)',
       ],
-      'heatmap-radius': ['interpolate', ['linear'], ['zoom'], 10, 15, 15, 30],
-      'heatmap-opacity': ['interpolate', ['linear'], ['zoom'], 12, 0.8, 18, 0.3],
+      'heatmap-radius': ['interpolate', ['linear'], ['zoom'], 10, 35, 13, 55, 15, 70, 18, 90],
+      'heatmap-opacity': ['interpolate', ['linear'], ['zoom'], 12, 0.85, 16, 0.55, 18, 0.3],
     },
   });
 
-  // Reference 'date' in paint so Mapbox preserves it in feature properties for tooltips
+  // Invisible hit-target layer; reference extra properties so Mapbox preserves them for tooltips
   map.addLayer({
     id: HEATMAP_CIRCLE_LAYER,
     type: 'circle',
     source: HEATMAP_SOURCE,
     paint: {
-      'circle-radius': ['interpolate', ['linear'], ['zoom'], 10, 15, 15, 30],
+      'circle-radius': ['interpolate', ['linear'], ['zoom'], 10, 20, 15, 40],
       'circle-color': 'transparent',
       'circle-stroke-width': 0,
-      'circle-opacity': ['case', ['has', 'date'], 0, 0],
+      'circle-opacity': ['case', ['all', ['has', 'date'], ['has', 'source']], 0, 0],
     },
   });
 }
@@ -113,8 +114,7 @@ function _addHotspotLayers(map: mapboxgl.Map) {
     },
   });
 
-  // Transparent hit-target for hover (unique ID so it doesn't overwrite visible circles)
-  // Reference 'date' in paint so Mapbox preserves it in feature properties for tooltips
+  // Transparent hit-target for hover; reference extra properties so Mapbox preserves them
   map.addLayer({
     id: HOTSPOT_HIT_LAYER,
     type: 'circle',
@@ -126,7 +126,7 @@ function _addHotspotLayers(map: mapboxgl.Map) {
       ],
       'circle-color': 'transparent',
       'circle-stroke-width': 0,
-      'circle-opacity': ['case', ['has', 'date'], 0, 0],
+      'circle-opacity': ['case', ['all', ['has', 'date'], ['has', 'source']], 0, 0],
     },
   });
 }
@@ -154,6 +154,7 @@ export function addCrimeHeatmap(map: mapboxgl.Map, _lat: number, _lng: number, p
       type: p.type || 'Unknown Incident',
       description: p.description || '',
       date: (p as { date?: string }).date || '',
+      source: (p as { source?: string }).source || '',
     },
   }));
 
@@ -194,7 +195,12 @@ export function addCitizenHeatmap(map: mapboxgl.Map, points?: HeatmapPoint[]) {
   const features: GeoJSON.Feature[] = points.map((p) => ({
     type: 'Feature',
     geometry: { type: 'Point', coordinates: [p.lng, p.lat] },
-    properties: { weight: p.weight, type: p.type || 'Incident' },
+    properties: {
+      weight: p.weight,
+      type: p.type || 'Incident',
+      date: (p as { date?: string }).date || '',
+      source: (p as { source?: string }).source || '',
+    },
   }));
 
   map.addSource(CITIZEN_HEATMAP_SOURCE, {
@@ -207,21 +213,22 @@ export function addCitizenHeatmap(map: mapboxgl.Map, points?: HeatmapPoint[]) {
     type: 'heatmap',
     source: CITIZEN_HEATMAP_SOURCE,
     paint: {
-      'heatmap-weight': ['interpolate', ['linear'], ['get', 'weight'], 0, 0, 1, 1],
-      'heatmap-intensity': ['interpolate', ['linear'], ['zoom'], 10, 0.6, 15, 2.5],
+      'heatmap-weight': ['interpolate', ['linear'], ['get', 'weight'], 0, 0, 0.5, 0.4, 1, 1],
+      'heatmap-intensity': ['interpolate', ['linear'], ['zoom'], 10, 0.4, 13, 0.8, 15, 1.5],
       'heatmap-color': [
         'interpolate',
         ['linear'],
         ['heatmap-density'],
-        0, 'rgba(0, 0, 0, 0)',
-        0.1, 'hsla(270, 60%, 60%, 0.2)',
-        0.3, 'hsla(280, 70%, 50%, 0.35)',
-        0.5, 'hsla(300, 75%, 50%, 0.5)',
-        0.7, 'hsla(330, 80%, 50%, 0.6)',
-        1.0, 'hsla(350, 85%, 50%, 0.75)',
+        0,    'rgba(0, 0, 0, 0)',
+        0.05, 'hsla(270, 60%, 60%, 0.08)',
+        0.15, 'hsla(270, 60%, 60%, 0.2)',
+        0.35, 'hsla(280, 70%, 50%, 0.35)',
+        0.55, 'hsla(300, 75%, 50%, 0.5)',
+        0.75, 'hsla(330, 80%, 50%, 0.6)',
+        1.0,  'hsla(350, 85%, 50%, 0.75)',
       ],
-      'heatmap-radius': ['interpolate', ['linear'], ['zoom'], 10, 18, 15, 35],
-      'heatmap-opacity': ['interpolate', ['linear'], ['zoom'], 12, 0.8, 18, 0.3],
+      'heatmap-radius': ['interpolate', ['linear'], ['zoom'], 10, 35, 13, 55, 15, 70, 18, 90],
+      'heatmap-opacity': ['interpolate', ['linear'], ['zoom'], 12, 0.85, 16, 0.55, 18, 0.3],
     },
   });
 
@@ -233,6 +240,7 @@ export function addCitizenHeatmap(map: mapboxgl.Map, points?: HeatmapPoint[]) {
       'circle-radius': ['interpolate', ['linear'], ['zoom'], 10, 15, 15, 30],
       'circle-color': 'transparent',
       'circle-stroke-width': 0,
+      'circle-opacity': ['case', ['all', ['has', 'date'], ['has', 'source']], 0, 0],
     },
   });
 }

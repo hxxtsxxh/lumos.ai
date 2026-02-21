@@ -5,7 +5,7 @@ import math
 import logging
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 import numpy as np
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,7 +18,7 @@ from models import (
     UserReportResponse, IncidentType, TimeAnalysis,
     DataSource, HeatmapPoint, HourlyRisk, NearbyPOI,
     RouteSegment, HistoricalDataPoint, AISafetyTipsRequest,
-    WeatherInfo,
+    WeatherInfo, LiveIncident,
 )
 from data_fetchers import (
     client, fetch_fbi_crime_data, fetch_fbi_historical,
@@ -32,7 +32,7 @@ from data_fetchers import (
 )
 from scoring import (
     compute_safety_score,
-    compute_heatmap_from_incidents, generate_synthetic_heatmap,
+    compute_heatmap_from_incidents,
     get_emergency_numbers, build_incident_types,
     estimate_local_crime_rate,
     gemini_refine_score,
@@ -380,10 +380,6 @@ async def get_safety_data(req: SafetyRequest):
     )
 
     heatmap_points = compute_heatmap_from_incidents(city_incidents, req.lat, req.lng)
-    heatmap_points = generate_synthetic_heatmap(
-        req.lat, req.lng, safety_index, heatmap_points,
-        nearby_pois=pois, incident_types=incident_types
-    )
 
     emergency_numbers = get_emergency_numbers(state_abbr, city, country_code)
 
@@ -397,7 +393,19 @@ async def get_safety_data(req: SafetyRequest):
                 "lng": report["lng"],
                 "weight": report["severity"] / 5.0,
                 "type": report.get("category", "User Report"),
+                "source": "User Report",
             })
+
+    # ── Build live incident summary for Gemini context ──
+    live_inc_parts = []
+    for inc in live_incidents[:10]:
+        parts = [inc.get("type", "Unknown")]
+        if inc.get("distance_miles"):
+            parts.append(f"{inc['distance_miles']:.1f}mi away")
+        if inc.get("date"):
+            parts.append(str(inc["date"])[:16])
+        live_inc_parts.append(", ".join(parts))
+    live_incident_summary = "; ".join(live_inc_parts) if live_inc_parts else ""
 
     # ── Gemini heatmap enrichment (adds contextual descriptions to hover) ──
     heatmap_points = await gemini_enrich_heatmap(
@@ -407,6 +415,7 @@ async def get_safety_data(req: SafetyRequest):
         crime_rate=crime_rate_per_100k,
         hour=hour,
         incident_types=incident_types,
+        live_incident_summary=live_incident_summary,
     )
 
     nearby_pois = [NearbyPOI(**p) for p in pois]
@@ -421,6 +430,72 @@ async def get_safety_data(req: SafetyRequest):
         alert_count=weather.get("alert_count", 0),
     )
 
+    # ── Build live incident list for the response ──
+    live_incident_models = []
+    for inc in live_incidents:
+        live_incident_models.append(LiveIncident(
+            type=inc.get("type", "Unknown"),
+            date=inc.get("date", ""),
+            lat=inc.get("lat", 0.0) or 0.0,
+            lng=inc.get("lng", 0.0) or 0.0,
+            distance_miles=inc.get("distance_miles", 0.0) or 0.0,
+            source=inc.get("source", ""),
+            severity=inc.get("severity", ""),
+            headline=inc.get("headline", ""),
+        ))
+
+    # ── Include Citizen incidents with epoch-ms → ISO conversion ──
+    for inc in citizen_incidents:
+        ts_ms = inc.get("ts") or inc.get("cs") or 0
+        date_str = ""
+        if ts_ms:
+            try:
+                date_str = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+            except (OSError, ValueError):
+                pass
+        dist = 0.0
+        if inc.get("lat") and inc.get("lng"):
+            dlat = inc["lat"] - req.lat
+            dlng = inc["lng"] - req.lng
+            dist = round(((dlat ** 2 + dlng ** 2) ** 0.5) * 69.0, 2)
+        severity_map = {"red": "severe", "yellow": "moderate", "green": "minor", "grey": "minor"}
+        live_incident_models.append(LiveIncident(
+            type=inc.get("title", "Incident"),
+            date=date_str,
+            lat=inc.get("lat", 0.0),
+            lng=inc.get("lng", 0.0),
+            distance_miles=dist,
+            source="Citizen",
+            severity=severity_map.get(inc.get("severity", ""), "moderate"),
+            headline=inc.get("title", ""),
+        ))
+
+    # ── Derive neighborhood context from scoring features ──
+    ctx_parts = []
+    if is_urban:
+        ctx_parts.append("Urban area")
+    else:
+        ctx_parts.append("Suburban/rural area")
+    if is_college:
+        ctx_parts.append("near college campus")
+    if poi_density > 0.5:
+        ctx_parts.append("high foot traffic")
+    elif poi_density > 0.2:
+        ctx_parts.append("moderate foot traffic")
+    if population > 0:
+        ctx_parts.append(f"population ~{population:,}")
+    neighborhood_context = ", ".join(ctx_parts)
+
+    # ── Sentiment summary (GDELT + incident patterns) ──
+    sentiment_summary = ""
+    try:
+        from sentiment import fetch_gdelt_news, analyze_incident_patterns, build_sentiment_summary
+        gdelt_results = await fetch_gdelt_news(city, state_abbr)
+        incident_analysis = analyze_incident_patterns(live_incidents)
+        sentiment_summary = build_sentiment_summary(gdelt_results, incident_analysis, city)
+    except Exception as e:
+        logger.warning(f"Sentiment analysis skipped: {e}")
+
     return SafetyResponse(
         safetyIndex=safety_index,
         riskLevel=risk_level,
@@ -433,6 +508,9 @@ async def get_safety_data(req: SafetyRequest):
         emergencyNumbers=emergency_numbers,
         nearbyPOIs=nearby_pois,
         weather=weather_info,
+        liveIncidents=live_incident_models,
+        sentimentSummary=sentiment_summary,
+        neighborhoodContext=neighborhood_context,
     )
 
 
@@ -963,7 +1041,7 @@ async def get_citizen_hotspots(
 
         incidents = []
         for item in data.get("results", []):
-            ts = item.get("ts", 0)
+            ts = item.get("ts", 0) or item.get("cs", 0)
             if ts < cutoff_ms:
                 continue
             lat = item.get("latitude")
@@ -971,11 +1049,19 @@ async def get_citizen_hotspots(
             if lat is None or lng is None:
                 continue
             level = item.get("level", 1)
+            date_str = ""
+            if ts:
+                try:
+                    date_str = datetime.fromtimestamp(ts / 1000, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+                except (OSError, ValueError):
+                    pass
             incidents.append({
                 "lat": lat,
                 "lng": lng,
                 "weight": max(level, 1) / 5.0,
                 "type": item.get("title", "Incident"),
+                "date": date_str,
+                "source": "Citizen",
             })
         return {"incidents": incidents}
     except Exception as e:
@@ -1025,20 +1111,35 @@ async def ai_safety_tips(req: AISafetyTipsRequest):
         genai.configure(api_key=GEMINI_API_KEY)
         model = genai.GenerativeModel("gemini-2.5-flash")
 
-        prompt = f"""You are a public safety advisor AI. Given the following travel context, provide exactly 4 concise, actionable safety tips. Be helpful, not fear-inducing.
+        risk_label = 'generally safe' if req.safetyIndex >= 70 else 'moderate risk' if req.safetyIndex >= 40 else 'high risk'
+        people_label = 'person' if req.peopleCount == 1 else 'people'
+
+        # Build enriched context sections
+        incidents_section = f"Common incidents nearby: {', '.join(req.incidentTypes)}" if req.incidentTypes else "Common incidents nearby: none reported"
+        live_section = f"\nRecent live incidents (last 48h):\n{req.liveIncidentSummary}" if req.liveIncidentSummary else ""
+        poi_section = f"\nNearby safety infrastructure: {', '.join(req.nearbyPOIs)}" if req.nearbyPOIs else ""
+        neighborhood_section = f"\nNeighborhood type: {req.neighborhoodContext}" if req.neighborhoodContext else ""
+        sentiment_section = f"\nCommunity & news sentiment: {req.sentimentSummary}" if req.sentimentSummary else ""
+
+        prompt = f"""You are a public safety advisor AI. Given the following travel context, provide exactly 4 concise, actionable safety tips. Be specific to this neighborhood and its actual conditions — avoid generic advice.
 
 Location: {req.locationName}
-Safety Index: {req.safetyIndex}/100 ({
-    'generally safe' if req.safetyIndex >= 70 else 'moderate risk' if req.safetyIndex >= 40 else 'high risk'
-})
-Common incidents nearby: {', '.join(req.incidentTypes) if req.incidentTypes else 'none reported'}
+Safety Index: {req.safetyIndex}/100 ({risk_label})
+{incidents_section}{live_section}{neighborhood_section}{poi_section}{sentiment_section}
+
 Traveling at: {req.timeOfTravel}
-Group size: {req.peopleCount} {'person' if req.peopleCount == 1 else 'people'}
+Group size: {req.peopleCount} {people_label}
 Gender: {req.gender}
+
+Instructions:
+- Reference specific conditions from the data above (e.g. if thefts are high, give theft-specific tips for this type of area)
+- If there are active weather alerts, address them
+- Tailor tips to the time of day and neighborhood character
+- Be helpful and empowering, not fear-inducing
 
 Return ONLY valid JSON — no markdown, no code fences:
 [
-  {{"title": "short title", "description": "1-2 sentence actionable tip", "priority": "high|medium|low"}},
+  {{"title": "short title", "description": "1-2 sentence actionable tip specific to this area", "priority": "high|medium|low"}},
   ...
 ]"""
 
@@ -1051,7 +1152,6 @@ Return ONLY valid JSON — no markdown, no code fences:
         text = result.text.strip()
         import json
         
-        # Robustly extract JSON list array if wrapped in markdown or extra text
         start_idx = text.find('[')
         end_idx = text.rfind(']')
         if start_idx != -1 and end_idx != -1:

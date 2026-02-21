@@ -1,14 +1,18 @@
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ShieldAlert, ShieldCheck, Shield } from 'lucide-react';
-import { generateSafetyTips, type AISafetyTip } from '@/lib/gemini';
-import type { SafetyData, TravelParams } from '@/types/safety';
+import { generateSafetyTips, type AISafetyTip, type EnrichedTipsContext } from '@/lib/gemini';
+import type { SafetyData, TravelParams, LiveIncident, NearbyPOI } from '@/types/safety';
 
 interface AISafetyTipsProps {
   data: SafetyData;
   locationName: string;
   params: TravelParams;
   expanded?: boolean;
+  liveIncidents?: LiveIncident[];
+  nearbyPOIs?: NearbyPOI[];
+  neighborhoodContext?: string;
+  sentimentSummary?: string;
 }
 
 const priorityConfig = {
@@ -17,7 +21,27 @@ const priorityConfig = {
   low: { icon: ShieldCheck, color: 'text-lumos-safe', bg: 'bg-green-500/10', border: 'border-green-500/20' },
 };
 
-const AISafetyTips = ({ data, locationName, params, expanded: externalExpanded }: AISafetyTipsProps) => {
+function buildLiveIncidentSummary(incidents: LiveIncident[]): string {
+  if (!incidents || incidents.length === 0) return '';
+  return incidents.slice(0, 8).map((inc) => {
+    const parts = [inc.type];
+    if (inc.distance_miles > 0) parts.push(`${inc.distance_miles.toFixed(1)}mi away`);
+    if (inc.date) {
+      try {
+        const d = new Date(inc.date);
+        const now = new Date();
+        const hoursAgo = Math.round((now.getTime() - d.getTime()) / (1000 * 60 * 60));
+        if (hoursAgo < 1) parts.push('just now');
+        else if (hoursAgo < 24) parts.push(`${hoursAgo}h ago`);
+        else parts.push(`${Math.round(hoursAgo / 24)}d ago`);
+      } catch { /* skip */ }
+    }
+    if (inc.severity) parts.push(inc.severity);
+    return parts.join(', ');
+  }).join('; ');
+}
+
+const AISafetyTips = ({ data, locationName, params, expanded: externalExpanded, liveIncidents, nearbyPOIs, neighborhoodContext, sentimentSummary }: AISafetyTipsProps) => {
   const [tips, setTips] = useState<AISafetyTip[]>([]);
   const [loading, setLoading] = useState(true);
   const expanded = externalExpanded ?? false;
@@ -26,13 +50,21 @@ const AISafetyTips = ({ data, locationName, params, expanded: externalExpanded }
     let cancelled = false;
     setLoading(true);
 
+    const enriched: EnrichedTipsContext = {
+      liveIncidentSummary: buildLiveIncidentSummary(liveIncidents ?? []),
+      nearbyPOIs: nearbyPOIs?.map((p) => `${p.name} (${p.type}, ${(p.distance / 1609.34).toFixed(1)}mi)`) ?? [],
+      neighborhoodContext: neighborhoodContext ?? '',
+      sentimentSummary: sentimentSummary ?? '',
+    };
+
     generateSafetyTips(
       locationName,
       data.safetyIndex,
       data.incidentTypes.map((i) => i.type),
       params.timeOfTravel,
       params.peopleCount,
-      params.gender
+      params.gender,
+      enriched
     ).then((result) => {
       if (!cancelled) {
         setTips(result);
@@ -43,7 +75,7 @@ const AISafetyTips = ({ data, locationName, params, expanded: externalExpanded }
     });
 
     return () => { cancelled = true; };
-  }, [locationName, data.safetyIndex, params.timeOfTravel, params.peopleCount, params.gender]);
+  }, [locationName, data.safetyIndex, params.timeOfTravel, params.peopleCount, params.gender, liveIncidents, nearbyPOIs, neighborhoodContext, sentimentSummary]);
 
   return (
     <AnimatePresence>

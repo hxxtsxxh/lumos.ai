@@ -1,4 +1,4 @@
-import type { SafetyData, TravelParams, RouteAnalysisData, NearbyPOI, HistoricalTrend, UserReport } from '@/types/safety';
+import type { SafetyData, TravelParams, RouteAnalysisData, NearbyPOI, HistoricalTrend, UserReport, LiveIncident } from '@/types/safety';
 import { API_BASE_URL, MAPBOX_TOKEN, GOOGLE_MAPS_API_KEY } from '@/lib/config';
 
 export interface HeatmapPoint {
@@ -7,7 +7,8 @@ export interface HeatmapPoint {
   weight: number;
   type?: string;
   description?: string;
-  date?: string;  // Most recent incident date in this cell/point
+  date?: string;
+  source?: string;
 }
 
 export interface HourlyRiskData {
@@ -29,6 +30,9 @@ export interface FullSafetyResponse extends SafetyData {
   emergencyNumbers: EmergencyNumber[];
   nearbyPOIs?: NearbyPOI[];
   weather?: import('@/types/safety').WeatherInfo;
+  liveIncidents?: LiveIncident[];
+  sentimentSummary?: string;
+  neighborhoodContext?: string;
 }
 
 export async function fetchSafetyScore(

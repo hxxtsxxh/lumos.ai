@@ -6,6 +6,13 @@ export interface AISafetyTip {
   priority: 'high' | 'medium' | 'low';
 }
 
+export interface EnrichedTipsContext {
+  liveIncidentSummary?: string;
+  nearbyPOIs?: string[];
+  neighborhoodContext?: string;
+  sentimentSummary?: string;
+}
+
 /**
  * Generate AI safety tips via backend proxy (keeps API key server-side).
  * Falls back to static tips on failure.
@@ -16,7 +23,8 @@ export async function generateSafetyTips(
   incidentTypes: string[],
   timeOfTravel: string,
   peopleCount: number,
-  gender: string
+  gender: string,
+  enrichedContext?: EnrichedTipsContext
 ): Promise<AISafetyTip[]> {
   try {
     const res = await fetch(`${API_BASE_URL}/api/ai-tips`, {
@@ -29,6 +37,10 @@ export async function generateSafetyTips(
         timeOfTravel,
         peopleCount,
         gender,
+        liveIncidentSummary: enrichedContext?.liveIncidentSummary ?? '',
+        nearbyPOIs: enrichedContext?.nearbyPOIs ?? [],
+        neighborhoodContext: enrichedContext?.neighborhoodContext ?? '',
+        sentimentSummary: enrichedContext?.sentimentSummary ?? '',
       }),
     });
     if (!res.ok) throw new Error(`AI tips request failed: ${res.status}`);
