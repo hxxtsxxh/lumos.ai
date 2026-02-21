@@ -1,5 +1,6 @@
 import type { SafetyData, TravelParams, RouteAnalysisData, NearbyPOI, HistoricalTrend, UserReport } from '@/types/safety';
 import { API_BASE_URL, MAPBOX_TOKEN, GOOGLE_MAPS_API_KEY } from '@/lib/config';
+import { functions, httpsCallable } from '@/lib/firebase';
 
 export interface HeatmapPoint {
   lat: number;
@@ -28,7 +29,6 @@ export interface FullSafetyResponse extends SafetyData {
   heatmapIncidentCount?: number;
   emergencyNumbers: EmergencyNumber[];
   nearbyPOIs?: NearbyPOI[];
-  weather?: import('@/types/safety').WeatherInfo;
 }
 
 export async function fetchSafetyScore(
@@ -179,6 +179,123 @@ export async function fetchUserReports(lat: number, lng: number, radius: number 
   if (!res.ok) return [];
   const data = await res.json();
   return data.reports || [];
+}
+
+// ─── Route recommendation (Gemini) ───
+export async function fetchRouteRecommendation(
+  originLat: number,
+  originLng: number,
+  destLat: number,
+  destLng: number,
+  params?: { peopleCount?: number; gender?: string; timeOfTravel?: string; mode?: string }
+): Promise<{ recommendation: string; overallSafety: number; riskLevel: string }> {
+  const res = await fetch(`${API_BASE_URL}/api/route-recommendation`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      originLat,
+      originLng,
+      destLat,
+      destLng,
+      ...params,
+    }),
+  });
+  if (!res.ok) throw new Error('Route recommendation failed');
+  return res.json();
+}
+
+// ─── Incident summary (Gemini) ───
+export async function fetchIncidentSummary(
+  state?: string,
+  coords?: { lat: number; lng: number }
+): Promise<{ summary: string; state: string }> {
+  const url = state
+    ? `${API_BASE_URL}/api/incident-summary?state=${encodeURIComponent(state)}`
+    : coords
+      ? `${API_BASE_URL}/api/incident-summary?lat=${coords.lat}&lng=${coords.lng}`
+      : '';
+  if (!url) throw new Error('Provide state or coords');
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('Incident summary failed');
+  return res.json();
+}
+
+// ─── Emergency call (VAPI + LUMOS AI) ───
+export interface EmergencyCallPayload {
+  callerName: string;
+  callerAge?: string;
+  lat: number;
+  lng: number;
+  address?: string;
+  safetyScore: number;
+  incidentType: string;
+  severity: string;
+  userNotes?: string;
+  movementDirection?: string;
+  movementSpeed?: string;
+}
+
+const useFirebaseEmergency =
+  (import.meta.env.VITE_USE_FIREBASE_EMERGENCY ?? 'true') !== 'false';
+
+const EMERGENCY_LOG = '[LUMOS emergency]';
+
+export async function startEmergencyCall(payload: EmergencyCallPayload): Promise<{ callId: string; status: string; message: string }> {
+  console.log(EMERGENCY_LOG, 'startEmergencyCall', { useFirebase: useFirebaseEmergency, payload: { ...payload, userNotes: payload.userNotes?.slice(0, 50) } });
+  if (useFirebaseEmergency) {
+    const startCall = httpsCallable<
+      EmergencyCallPayload,
+      { callId: string; status: string; message: string }
+    >(functions, 'startEmergencyCall');
+    const result = await startCall(payload);
+    const data = result.data as { callId: string; status: string; message: string } | undefined;
+    console.log(EMERGENCY_LOG, 'startEmergencyCall result', { callId: data?.callId, status: data?.status });
+    if (!data?.callId) throw new Error('Failed to start emergency call');
+    return { callId: data.callId, status: data.status ?? 'started', message: data.message ?? '' };
+  }
+  const res = await fetch(`${API_BASE_URL}/api/emergency-call`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err.detail as string) || 'Failed to start emergency call');
+  }
+  return res.json();
+}
+
+export async function sendEmergencyCallUpdate(callId: string, message: string): Promise<void> {
+  console.log(EMERGENCY_LOG, 'sendEmergencyCallUpdate', { callId, messageLength: message.length });
+  if (useFirebaseEmergency) {
+    const sendUpdate = httpsCallable<{ callId: string; message: string }, { ok: boolean }>(
+      functions,
+      'emergencyCallMessage'
+    );
+    await sendUpdate({ callId, message });
+    console.log(EMERGENCY_LOG, 'sendEmergencyCallUpdate done');
+    return;
+  }
+  const res = await fetch(`${API_BASE_URL}/api/emergency-call/${callId}/message`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message }),
+  });
+  if (!res.ok) throw new Error('Failed to send update');
+}
+
+export async function endEmergencyCall(callId: string): Promise<void> {
+  console.log(EMERGENCY_LOG, 'endEmergencyCall', { callId });
+  if (useFirebaseEmergency) {
+    const endCall = httpsCallable<{ callId: string }, { ok: boolean }>(functions, 'emergencyCallEnd');
+    await endCall({ callId });
+    console.log(EMERGENCY_LOG, 'endEmergencyCall done');
+    return;
+  }
+  const res = await fetch(`${API_BASE_URL}/api/emergency-call/${callId}/end`, {
+    method: 'POST',
+  });
+  if (!res.ok) throw new Error('Failed to end call');
 }
 
 // ─── Safety Chat (Conversational Q&A) ───
