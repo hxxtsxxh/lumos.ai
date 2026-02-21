@@ -128,6 +128,7 @@ function EmergencyCallModal({
 
   const handleStartCall = async () => {
     setStep('active');
+    console.log('[EmergencyCallModal] Starting call…', { lat, lng, incidentType, severity });
     try {
       const res = await startEmergencyCall({
         callerName: name || 'Caller',
@@ -143,10 +144,12 @@ function EmergencyCallModal({
         movementSpeed,
       });
       setCallId(res.callId);
+      console.log('[EmergencyCallModal] Call started', { callId: res.callId });
       toast.success('Emergency call started', {
         description: 'LUMOS AI is speaking to the operator on your behalf.',
       });
     } catch (e) {
+      console.error('[EmergencyCallModal] startEmergencyCall failed', e);
       const msg =
         e instanceof Error
           ? e.message
