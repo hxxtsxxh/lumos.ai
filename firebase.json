@@ -1,0 +1,14 @@
+{
+    "functions": {
+      "source": "functions",
+      "runtime": "nodejs20",
+      "ignore": [
+        "node_modules",
+        ".git",
+        "*.local"
+      ]
+    },
+    "firestore": {
+      "rules": "firestore.rules"
+    }
+  }
