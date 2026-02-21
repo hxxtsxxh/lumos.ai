@@ -21,6 +21,8 @@ import RouteSafetyPanel from '@/components/RouteSafetyPanel';
 import HeatmapLegend from '@/components/HeatmapLegend';
 import WalkWithMe from '@/components/WalkWithMe';
 import LiveIncidents from '@/components/LiveIncidents';
+import SafetyChatWidget from '@/components/SafetyChatWidget';
+import { EmergencyCallModal } from '@/components/EmergencyCallModal';
 import { geocodeLocation, fetchSafetyScore, fetchRouteAnalysis, fetchCitizenHotspots, type FullSafetyResponse, type HeatmapPoint } from '@/lib/api';
 import { useTheme } from '@/hooks/useTheme';
 import {
@@ -102,6 +104,9 @@ const Index = () => {
 
   // Mobile bottom sheet state: collapsed shows peek bar, expanded shows full panels
   const [mobilePanelOpen, setMobilePanelOpen] = useState(false);
+
+  // Emergency call (VAPI) modal
+  const [emergencyCallModalOpen, setEmergencyCallModalOpen] = useState(false);
 
   // Keyboard shortcut: '/' focuses search
   useEffect(() => {
@@ -941,10 +946,10 @@ const Index = () => {
           transition={{ duration: 0.5 }}
           className="absolute inset-0 z-10 pointer-events-none"
         >
-          {/* ─── Desktop: side-by-side panels (unchanged) ─── */}
-          <div className="h-full hidden md:flex md:flex-row">
+          {/* ─── Desktop: side-by-side panels ─── */}
+          <div className="h-full hidden lg:flex lg:flex-row">
             {/* Left panel */}
-            <div className="w-full md:w-[380px] lg:w-[420px] p-3 sm:p-6 pt-16 sm:pt-24 md:overflow-y-auto pointer-events-auto space-y-3 sm:space-y-4 scrollbar-hide relative z-10">
+            <div className="w-full lg:w-[380px] xl:w-[420px] p-3 sm:p-6 pt-16 sm:pt-24 lg:overflow-y-auto pointer-events-auto space-y-3 sm:space-y-4 scrollbar-hide relative z-10">
               <RouteSearchBar
                 onSearchSingle={handleSearchSingle}
                 onSearchRoute={handleSearchRoute}
@@ -981,7 +986,7 @@ const Index = () => {
             <div className="flex-1 pointer-events-none" />
 
             {/* Right panel */}
-            <div className="w-full md:w-[360px] lg:w-[380px] relative pointer-events-auto flex flex-col">
+            <div className="w-full lg:w-[360px] xl:w-[380px] relative pointer-events-auto flex flex-col">
               <div
                 className="absolute top-0 left-0 right-0 h-16 z-10 pointer-events-none"
                 style={{
@@ -1074,6 +1079,15 @@ const Index = () => {
                 )}
                 {stateAbbr && <HistoricalTrends state={stateAbbr} expanded={activePanel === 'trends'} />}
                 <EmergencyResources locationName={locationName} numbers={safetyData.emergencyNumbers} expanded={activePanel === 'emergency'} />
+                {activePanel === 'emergency' && locationCoords && (
+                  <button
+                    onClick={() => setEmergencyCallModalOpen(true)}
+                    className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-lumos-danger text-white font-medium hover:bg-lumos-danger/90 active:bg-lumos-danger/80 transition-colors"
+                  >
+                    <Phone className="w-5 h-5" />
+                    Call with LUMOS AI (VAPI)
+                  </button>
+                )}
                 {locationCoords && (
                   <ReportIncident lat={locationCoords.lat} lng={locationCoords.lng} userId={user?.uid} expanded={activePanel === 'report'} />
                 )}
@@ -1082,7 +1096,7 @@ const Index = () => {
           </div>
 
           {/* ─── Mobile: collapsible bottom sheet ─── */}
-          <div className="md:hidden absolute inset-x-0 bottom-0 z-20 pointer-events-auto flex flex-col" style={{ top: mobilePanelOpen ? '56px' : 'auto' }}>
+          <div className="lg:hidden absolute inset-x-0 bottom-0 z-20 pointer-events-auto flex flex-col" style={{ top: mobilePanelOpen ? '56px' : 'auto' }}>
             {/* Peek bar — always visible */}
             <button
               onClick={() => setMobilePanelOpen(!mobilePanelOpen)}
@@ -1236,6 +1250,15 @@ const Index = () => {
                   )}
                   {stateAbbr && <HistoricalTrends state={stateAbbr} expanded={activePanel === 'trends'} />}
                   <EmergencyResources locationName={locationName} numbers={safetyData.emergencyNumbers} expanded={activePanel === 'emergency'} />
+                  {activePanel === 'emergency' && locationCoords && (
+                    <button
+                      onClick={() => setEmergencyCallModalOpen(true)}
+                      className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-lumos-danger text-white font-medium hover:bg-lumos-danger/90 active:bg-lumos-danger/80 transition-colors"
+                    >
+                      <Phone className="w-5 h-5" />
+                      Call with LUMOS AI (VAPI)
+                    </button>
+                  )}
                   {locationCoords && (
                     <ReportIncident lat={locationCoords.lat} lng={locationCoords.lng} userId={user?.uid} expanded={activePanel === 'report'} />
                   )}
@@ -1244,6 +1267,18 @@ const Index = () => {
             )}
           </div>
         </motion.div>
+      )}
+
+      {/* Emergency call modal (VAPI) — shown when user taps "Call with LUMOS AI" */}
+      {locationCoords && safetyData && (
+        <EmergencyCallModal
+          open={emergencyCallModalOpen}
+          onOpenChange={setEmergencyCallModalOpen}
+          lat={locationCoords.lat}
+          lng={locationCoords.lng}
+          address={locationName}
+          safetyScore={safetyData.safetyIndex}
+        />
       )}
 
       {/* Results: Route */}
@@ -1256,9 +1291,9 @@ const Index = () => {
           className="absolute inset-0 z-10 pointer-events-none"
         >
           {/* ─── Desktop: side-by-side panels ─── */}
-          <div className="h-full hidden md:flex md:flex-row">
+          <div className="h-full hidden lg:flex lg:flex-row">
             {/* Left panel */}
-            <div className="w-full md:w-[380px] lg:w-[420px] p-3 sm:p-6 pt-16 sm:pt-24 md:overflow-y-auto pointer-events-auto space-y-3 sm:space-y-4 scrollbar-hide relative z-10">
+            <div className="w-full lg:w-[380px] xl:w-[420px] p-3 sm:p-6 pt-16 sm:pt-24 lg:overflow-y-auto pointer-events-auto space-y-3 sm:space-y-4 scrollbar-hide relative z-10">
               <RouteSearchBar
                 onSearchSingle={handleSearchSingle}
                 onSearchRoute={handleSearchRoute}
@@ -1294,7 +1329,7 @@ const Index = () => {
             <div className="flex-1 pointer-events-none" />
 
             {/* Right panel */}
-            <div className="w-full md:w-[360px] lg:w-[380px] relative pointer-events-auto flex flex-col">
+            <div className="w-full lg:w-[360px] xl:w-[380px] relative pointer-events-auto flex flex-col">
               <div
                 className="absolute top-0 left-0 right-0 h-16 z-10 pointer-events-none"
                 style={{
@@ -1344,7 +1379,7 @@ const Index = () => {
           </div>
 
           {/* ─── Mobile: collapsible bottom sheet ─── */}
-          <div className="md:hidden absolute inset-x-0 bottom-0 z-20 pointer-events-auto flex flex-col" style={{ top: mobilePanelOpen ? '56px' : 'auto' }}>
+          <div className="lg:hidden absolute inset-x-0 bottom-0 z-20 pointer-events-auto flex flex-col" style={{ top: mobilePanelOpen ? '56px' : 'auto' }}>
             {/* Peek bar */}
             <button
               onClick={() => setMobilePanelOpen(!mobilePanelOpen)}
@@ -1478,6 +1513,14 @@ const Index = () => {
         isOpen={savedPanelOpen}
         onClose={() => setSavedPanelOpen(false)}
         onLoadReport={handleLoadReport}
+      />
+
+      {/* Safety Chat Widget */}
+      <SafetyChatWidget
+        locationName={locationName}
+        safetyData={safetyData}
+        routeData={routeData}
+        params={params}
       />
 
     </div>

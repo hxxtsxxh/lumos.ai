@@ -170,3 +170,13 @@ class AISafetyTipsRequest(BaseModel):
     nearbyPOIs: list[str] = []
     neighborhoodContext: str = ""
     sentimentSummary: str = ""
+
+
+class SafetyChatRequest(BaseModel):
+    message: str
+    locationName: str = ""
+    safetyIndex: float | None = None
+    incidentTypes: list[str] = []
+    riskLevel: str = ""
+    timeOfTravel: str = ""
+    conversationHistory: list[dict] = []
