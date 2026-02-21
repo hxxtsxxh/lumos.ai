@@ -671,40 +671,44 @@ def _haversine_mi(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
 
 
-def compute_citizen_adjustment(
+def compute_live_incident_penalty(
     target_lat: float,
     target_lng: float,
-    citizen_incidents: list[dict],
+    all_incidents: list[dict],
     current_hour: int,
     target_hour: int | None = None,
 ) -> float:
-    """Compute a safety-index *penalty* from nearby real-time Citizen incidents.
+    """Compute a safety-index *penalty* from ALL nearby real-time incidents.
+
+    Accepts a unified list of incidents from any source (Citizen, Socrata,
+    NWS alerts).  Each incident dict should have at minimum: lat, lng, and
+    a timestamp (ts/cs epoch-ms, or date ISO string).
 
     Each incident contributes a weighted score based on:
       1. Distance decay     — closer incidents matter exponentially more
-      2. Recency decay      — recent incidents matter more (half-life ≈ 2.8 h)
-      3. Severity weight    — level + incidentScore + severity color
-      4. Source credibility  — 911 dispatches > community reports
+      2. Recency decay      — recent incidents matter more (half-life ~4 h)
+      3. Severity weight    — level + incidentScore + severity string
+      4. Source credibility  — 911/police > community > unknown
       5. Status filter      — closed/confirmed/good-news adjustments
       6. Forecast decay     — for future hours, current incidents fade
 
     Returns a non-negative float in [0, MAX_PENALTY] to *subtract* from
-    the safety index.  Returns 0.0 when citizen_incidents is empty or all
+    the safety index.  Returns 0.0 when all_incidents is empty or all
     incidents are filtered out.
     """
-    if not citizen_incidents:
+    if not all_incidents:
         return 0.0
 
     import time as _time
 
     now_ms = _time.time() * 1000
-    MAX_PENALTY = 25.0   # hard ceiling — CIA alone can't drop more than 25 pts
-    SCALE = 12.0         # converts weighted-incident-sum → safety-index points
+    MAX_PENALTY = 45.0
+    SCALE = 18.0
 
     total_weight = 0.0
+    severe_count = 0
 
-    for inc in citizen_incidents:
-        # ── Filter: skip good-news / non-crime incidents ──
+    for inc in all_incidents:
         if inc.get("isGoodNews", False):
             continue
 
@@ -714,80 +718,108 @@ def compute_citizen_adjustment(
             continue
 
         # ── 1. Distance decay ──
-        # Half-weight at 0.3 mi, near-zero at 2 mi.
-        # At 0.0 mi: 1.00 | 0.1 mi: 0.90 | 0.3 mi: 0.50
-        # 0.5 mi: 0.26 | 1.0 mi: 0.08 | 2.0 mi: 0.02
+        # Half-weight at 0.5 mi; meaningful weight out to 3 mi.
         dist_mi = _haversine_mi(target_lat, target_lng, float(i_lat), float(i_lng))
-        if dist_mi > 2.0:
-            continue  # too far — skip entirely to save computation
-        distance_w = 1.0 / (1.0 + (dist_mi / 0.3) ** 2)
+        if dist_mi > 3.0:
+            continue
+        distance_w = 1.0 / (1.0 + (dist_mi / 0.5) ** 2)
 
         # ── 2. Recency decay ──
-        # exp(-age_h / 4) → half-life ≈ 2.77 h
-        # 0 h: 1.00 | 1 h: 0.78 | 3 h: 0.47 | 6 h: 0.22 | 12 h: 0.05
+        # Try epoch-ms timestamps first, then ISO date string.
         ts = inc.get("ts", 0) or inc.get("cs", 0)
-        if not ts or ts <= 0:
-            continue  # no usable timestamp — skip to avoid false weighting
-        age_hours = max(0.0, (now_ms - ts) / 3_600_000)
-        if age_hours > 24.0:
-            continue  # stale
-        recency_w = math.exp(-age_hours / 4.0)
+        age_hours = None
+        if ts and ts > 0:
+            age_hours = max(0.0, (now_ms - ts) / 3_600_000)
+        else:
+            date_str = inc.get("date", "")
+            if date_str:
+                try:
+                    from datetime import datetime as _dt, timezone as _tz
+                    dt = _dt.fromisoformat(date_str.replace("Z", "+00:00"))
+                    age_hours = max(0.0, (now_ms - dt.timestamp() * 1000) / 3_600_000)
+                except (ValueError, TypeError):
+                    pass
+
+        if age_hours is None or age_hours > 48.0:
+            continue
+        # exp(-age_h / 6) → half-life ~4.2 h; 24h ≈ 0.018, 48h ≈ 0.0003
+        recency_w = math.exp(-age_hours / 6.0)
 
         # ── 3. Severity weight ──
-        # Combine numeric level (0-2+) with incidentScore (0-~0.5).
         level = inc.get("level", 0)
         score = max(0.0, min(float(inc.get("incidentScore", 0) or 0), 1.0))
-        sev_str = inc.get("severity", "grey")
+        sev_str = str(inc.get("severity", "")).lower()
 
-        if level == 0 and sev_str == "green":
-            severity_w = 0.10  # negligible (community events, etc.)
-        elif level == 0:
-            severity_w = 0.25  # minor (suspicious activity, noise)
-        elif level == 1:
-            severity_w = 0.50 + score * 0.50  # moderate (most crimes)
-        else:  # level >= 2
-            severity_w = 0.80 + score * 0.20  # serious (shooting, fire)
+        if sev_str in ("extreme", "severe", "red") or level >= 2:
+            severity_w = 1.0
+            severe_count += 1
+        elif sev_str in ("moderate", "yellow") or level == 1:
+            severity_w = 0.60 + score * 0.30
+        elif sev_str == "green" and level == 0:
+            severity_w = 0.10
+        elif sev_str == "minor":
+            severity_w = 0.35
+        else:
+            severity_w = 0.30 + score * 0.30
         severity_w = min(severity_w, 1.0)
 
         # ── 4. Source credibility ──
-        source = inc.get("source", "unknown")
-        if source == "911":
-            source_w = 1.0    # highest confidence — police dispatch
+        source = str(inc.get("source", "unknown")).lower()
+        if source in ("911", "police", "nws_alerts"):
+            source_w = 1.0
+        elif source in ("socrata", "open_data") or source.startswith("socrata_"):
+            source_w = 0.85
+        elif source == "citizen":
+            source_w = 0.75
         elif source == "community":
-            source_w = 0.6    # user-reported, less verified
+            source_w = 0.6
         else:
-            source_w = 0.5    # unknown provenance
+            source_w = 0.5
 
         # ── 5. Status filter ──
         closed = inc.get("closed", False)
         confirmed = inc.get("confirmed", False)
 
         if closed and age_hours > 3.0:
-            status_w = 0.15   # resolved & old — mostly irrelevant
+            status_w = 0.15
         elif closed:
-            status_w = 0.40   # resolved recently — residual risk
+            status_w = 0.40
         elif confirmed:
-            status_w = 1.20   # verified active — boost
+            status_w = 1.20
         else:
-            status_w = 1.00   # unconfirmed but active
+            status_w = 1.00
 
-        # ── Combine per-incident weight ──
         incident_w = distance_w * recency_w * severity_w * source_w * status_w
         total_weight += incident_w
 
     # ── 6. Forecast decay for future/past hours ──
-    # For the current-time query (target_hour is None), full weight applies.
-    # For hourly-curve queries, decay linearly in circular-hour distance.
     forecast_w = 1.0
     if target_hour is not None:
         delta = abs(target_hour - current_hour)
         if delta > 12:
-            delta = 24 - delta  # circular wrap (e.g. hour 1 vs 23 → 2 h apart)
-        # exp(-delta / 6) → 0 h: 1.00 | 3 h: 0.61 | 6 h: 0.37 | 12 h: 0.14
+            delta = 24 - delta
         forecast_w = math.exp(-delta / 6.0)
+
+    # Bonus penalty when many severe incidents cluster nearby
+    if severe_count >= 3:
+        total_weight *= 1.0 + min(severe_count - 2, 5) * 0.15
 
     penalty = min(total_weight * SCALE * forecast_w, MAX_PENALTY)
     return penalty
+
+
+def compute_citizen_adjustment(
+    target_lat: float,
+    target_lng: float,
+    citizen_incidents: list[dict],
+    current_hour: int,
+    target_hour: int | None = None,
+) -> float:
+    """Legacy wrapper — delegates to compute_live_incident_penalty."""
+    return compute_live_incident_penalty(
+        target_lat, target_lng, citizen_incidents,
+        current_hour, target_hour,
+    )
 
 
 def compute_safety_score(
@@ -836,7 +868,7 @@ def compute_safety_score(
     }.get(gender, 0.5)
 
     MAX_LIVE_EVENTS = 30
-    MAX_LIVE_INCIDENTS = 50
+    MAX_LIVE_INCIDENTS = 15
     norm_live_events = min(live_events / MAX_LIVE_EVENTS, 1.0)
     norm_live_incidents = min(live_incidents / MAX_LIVE_INCIDENTS, 1.0)
     norm_people = min(people_count / 4, 1.0)
@@ -1230,6 +1262,8 @@ async def gemini_refine_score(
     gender: str = "prefer-not-to-say",
     incident_types: list[str] | None = None,
     is_route: bool = False,
+    live_incident_summary: str = "",
+    live_incident_count: int = 0,
 ) -> int:
     """Use Gemini to refine an ML safety score with contextual reasoning.
 
@@ -1246,6 +1280,7 @@ async def gemini_refine_score(
         ml_score, city_name, state_abbr, hour,
         round(crime_rate, -1), round(weather_severity, 1),
         people_count, gender, is_route,
+        live_incident_count,
     )
     with _GEMINI_CACHE_LOCK:
         if cache_key in _GEMINI_CACHE:
@@ -1260,6 +1295,10 @@ async def gemini_refine_score(
         time_label = "daytime" if 7 <= hour < 18 else "evening" if 18 <= hour < 22 else "late night"
         incidents_str = ", ".join(incident_types[:5]) if incident_types else "none reported"
 
+        live_section = ""
+        if live_incident_summary:
+            live_section = f"\n- Recent live incidents ({live_incident_count} total, last 48h): {live_incident_summary}"
+
         prompt = f"""You are a public safety data analyst. An ML model scored this location's safety. Refine the score based on your knowledge.
 
 Context:
@@ -1269,14 +1308,14 @@ Context:
 - Crime Rate: {crime_rate:.0f} per 100k
 - Weather: {weather_condition}, severity {weather_severity:.1f}/1.0
 - Group: {people_count} {'person' if people_count == 1 else 'people'}, {gender}
-- Nearby incidents: {incidents_str}
-- Analysis type: {"route segment" if is_route else "stationary location"}
+- Common crime types nearby: {incidents_str}
+- Analysis type: {"route segment" if is_route else "stationary location"}{live_section}
 
 Based on your knowledge of this area's actual safety reputation, recent crime trends, and the contextual factors above, provide a refined safety score.
 
 Rules:
-1. Your adjustment should be within ±15 points of the ML score
-2. Only adjust significantly if you have strong knowledge about this specific area
+1. Your adjustment should be within ±20 points of the ML score
+2. If there are many recent severe live incidents (shootings, stabbings, armed robberies), you MUST lower the score significantly
 3. Consider time-of-day effects, neighborhood reputation, and seasonal patterns
 4. If unsure, return the original score
 
@@ -1291,7 +1330,6 @@ Return ONLY valid JSON (no markdown):
         )
         text = result.text.strip()
 
-        # Parse response
         start_idx = text.find('{')
         end_idx = text.rfind('}')
         if start_idx != -1 and end_idx != -1:
@@ -1301,8 +1339,8 @@ Return ONLY valid JSON (no markdown):
         refined = int(parsed.get("refined_score", ml_score))
         reason = parsed.get("reason", "")
 
-        # Enforce ±15 bound
-        refined = max(ml_score - 15, min(ml_score + 15, refined))
+        # Enforce ±20 bound (widened from ±15 to let severe live data have impact)
+        refined = max(ml_score - 20, min(ml_score + 15, refined))
         refined = max(5, min(95, refined))
 
         if reason:

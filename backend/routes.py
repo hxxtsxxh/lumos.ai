@@ -38,6 +38,7 @@ from scoring import (
     gemini_refine_score,
     gemini_enrich_heatmap,
     update_incident_crime_level,
+    compute_live_incident_penalty,
     compute_citizen_adjustment,
 )
 from ml_model import safety_model
@@ -242,6 +243,7 @@ async def get_safety_data(req: SafetyRequest):
     poi_density = min(len(pois) / 50.0, 1.0) if pois else 0.0
     is_after_sunset = 1.0 if (hour >= 18 or hour < 6) else 0.0
 
+    _total_live = len(live_incidents) + len(citizen_incidents)
     safety_index, _ = compute_safety_score(
         crime_rate_per_100k, hour, req.peopleCount, req.gender,
         weather.get("max_severity", 0.0), population,
@@ -256,27 +258,74 @@ async def get_safety_data(req: SafetyRequest):
         lat=req.lat,
         lng=req.lng,
         live_events=live_events,
-        live_incidents=len(live_incidents),
+        live_incidents=_total_live,
         moon_illumination=moon_illumination,
         city_name=city,
     )
 
     risk_level = "safe" if safety_index >= 70 else "caution" if safety_index >= 40 else "danger"
 
-    # ── Citizen Incident Adjustment (real-time penalty) ──
-    cia_penalty = compute_citizen_adjustment(
+    # ── Unified Live-Incident Penalty (Citizen + Socrata/NWS) ──
+    # Normalise open-data incidents into the same dict shape the penalty expects.
+    _unified_incidents: list[dict] = list(citizen_incidents)
+    for inc in live_incidents:
+        _sev = str(inc.get("severity", "")).lower()
+        _level = 2 if _sev in ("extreme", "severe") else 1 if _sev == "moderate" else 0
+        _ts = 0
+        if inc.get("date"):
+            try:
+                _dt_obj = datetime.fromisoformat(str(inc["date"]).replace("Z", "+00:00"))
+                _ts = int(_dt_obj.timestamp() * 1000)
+            except (ValueError, TypeError):
+                pass
+        _unified_incidents.append({
+            "lat": inc.get("lat"),
+            "lng": inc.get("lng"),
+            "ts": _ts,
+            "level": _level,
+            "severity": _sev or "moderate",
+            "incidentScore": 0.5 if _level >= 1 else 0.1,
+            "source": inc.get("source", "open_data"),
+            "title": inc.get("type", ""),
+            "closed": False,
+            "confirmed": True,
+            "isGoodNews": False,
+        })
+
+    live_penalty = compute_live_incident_penalty(
         target_lat=req.lat,
         target_lng=req.lng,
-        citizen_incidents=citizen_incidents,
+        all_incidents=_unified_incidents,
         current_hour=hour,
-        target_hour=None,  # current-time query → full weight
+        target_hour=None,
     )
-    if cia_penalty > 0:
-        safety_index = max(5, safety_index - int(round(cia_penalty)))
+    if live_penalty > 0:
+        safety_index = max(5, safety_index - int(round(live_penalty)))
         risk_level = "safe" if safety_index >= 70 else "caution" if safety_index >= 40 else "danger"
-        logger.info(f"CIA: penalty={cia_penalty:.1f}, {len(citizen_incidents)} incidents, adjusted safety_index={safety_index}")
+        logger.info(
+            f"Live-incident penalty={live_penalty:.1f} "
+            f"({len(citizen_incidents)} citizen + {len(live_incidents)} open-data), "
+            f"adjusted safety_index={safety_index}"
+        )
 
-    # ── Gemini refinement layer (best-effort, won't block on failure) ──
+    # ── Build live incident summary for Gemini context (before refinement) ──
+    _live_summary_parts = []
+    for inc in live_incidents[:8]:
+        parts = [inc.get("type", "Unknown")]
+        if inc.get("distance_miles"):
+            parts.append(f"{inc['distance_miles']:.1f}mi away")
+        if inc.get("severity"):
+            parts.append(str(inc["severity"]))
+        _live_summary_parts.append(", ".join(parts))
+    for inc in citizen_incidents[:8]:
+        sev_map = {"red": "severe", "yellow": "moderate", "green": "minor", "grey": "minor"}
+        parts = [inc.get("title", "Incident")]
+        sev_label = sev_map.get(inc.get("severity", ""), "moderate")
+        parts.append(sev_label)
+        _live_summary_parts.append(", ".join(parts))
+    live_incident_summary = "; ".join(_live_summary_parts[:12]) if _live_summary_parts else ""
+
+    # ── Gemini refinement layer (now with live incident context) ──
     safety_index = await gemini_refine_score(
         safety_index,
         city_name=city,
@@ -288,6 +337,8 @@ async def get_safety_data(req: SafetyRequest):
         people_count=req.peopleCount,
         gender=req.gender,
         incident_types=[it.type for it in incident_types[:5]],
+        live_incident_summary=live_incident_summary,
+        live_incident_count=len(_unified_incidents),
     )
     risk_level = "safe" if safety_index >= 70 else "caution" if safety_index >= 40 else "danger"
 
@@ -314,20 +365,19 @@ async def get_safety_data(req: SafetyRequest):
             is_college=is_college, is_urban=is_urban, is_weekend=is_weekend,
             poi_density=poi_density,
             lat=req.lat, lng=req.lng,
-            live_events=live_events, live_incidents=len(live_incidents),
+            live_events=live_events, live_incidents=_total_live,
             moon_illumination=moon_illumination,
             city_name=city,
         )
-        # Apply CIA with forecast decay for this hour
-        h_cia = compute_citizen_adjustment(
+        h_penalty = compute_live_incident_penalty(
             target_lat=req.lat,
             target_lng=req.lng,
-            citizen_incidents=citizen_incidents,
+            all_incidents=_unified_incidents,
             current_hour=hour,
             target_hour=h,
         )
-        s_idx = max(5, s_idx - int(round(h_cia)))
-        risk_val = 100 - s_idx  # Higher score = safer, so risk = 100 - safety
+        s_idx = max(5, s_idx - int(round(h_penalty)))
+        risk_val = 100 - s_idx
         risk_values.append(risk_val)
 
     # ── Amplify temporal contrast ──
@@ -395,17 +445,6 @@ async def get_safety_data(req: SafetyRequest):
                 "type": report.get("category", "User Report"),
                 "source": "User Report",
             })
-
-    # ── Build live incident summary for Gemini context ──
-    live_inc_parts = []
-    for inc in live_incidents[:10]:
-        parts = [inc.get("type", "Unknown")]
-        if inc.get("distance_miles"):
-            parts.append(f"{inc['distance_miles']:.1f}mi away")
-        if inc.get("date"):
-            parts.append(str(inc["date"])[:16])
-        live_inc_parts.append(", ".join(parts))
-    live_incident_summary = "; ".join(live_inc_parts) if live_inc_parts else ""
 
     # ── Gemini heatmap enrichment (adds contextual descriptions to hover) ──
     heatmap_points = await gemini_enrich_heatmap(
@@ -753,6 +792,15 @@ async def get_route_safety(req: RouteRequest):
         overall = 50
 
     # ── Gemini refinement on overall route score ────────────────
+    _route_live_parts = []
+    for inc in (origin_live_incidents + dest_live_incidents)[:8]:
+        _route_live_parts.append(inc.get("type", "Unknown"))
+    for inc in (origin_citizen + dest_citizen)[:8]:
+        _sev_map = {"red": "severe", "yellow": "moderate", "green": "minor"}
+        _route_live_parts.append(f"{inc.get('title', 'Incident')} ({_sev_map.get(inc.get('severity', ''), 'moderate')})")
+    _route_live_summary = "; ".join(_route_live_parts[:12])
+    _route_live_count = len(origin_live_incidents) + len(dest_live_incidents) + len(origin_citizen) + len(dest_citizen)
+
     overall = await gemini_refine_score(
         overall,
         city_name=origin_city,
@@ -764,6 +812,8 @@ async def get_route_safety(req: RouteRequest):
         people_count=req.peopleCount,
         gender=req.gender,
         is_route=True,
+        live_incident_summary=_route_live_summary,
+        live_incident_count=_route_live_count,
     )
     overall_risk = "safe" if overall >= 70 else "caution" if overall >= 40 else "danger"
 
@@ -847,11 +897,11 @@ async def get_route_safety(req: RouteRequest):
             poi_density=min(len(origin_pois) / 50.0, 1.0) if origin_pois else 0.0,
             lat=origin_pt[0], lng=origin_pt[1],
             live_events=origin_live_events,
-            live_incidents=len(origin_live_incidents),
+            live_incidents=len(origin_live_incidents) + len(origin_citizen),
             moon_illumination=origin_moon,
             city_name=origin_city or "",
         )
-        # Apply CIA with forecast decay for this hour
+        # Apply live-incident penalty with forecast decay for this hour
         h_cia = compute_citizen_adjustment(
             target_lat=origin_pt[0], target_lng=origin_pt[1],
             citizen_incidents=origin_citizen,
