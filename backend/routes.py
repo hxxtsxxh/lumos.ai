@@ -18,7 +18,7 @@ from models import (
     UserReportResponse, IncidentType, TimeAnalysis,
     DataSource, HeatmapPoint, HourlyRisk, NearbyPOI,
     RouteSegment, HistoricalDataPoint, AISafetyTipsRequest,
-    WeatherInfo,
+    WeatherInfo, SafetyChatRequest,
 )
 from data_fetchers import (
     client, fetch_fbi_crime_data, fetch_fbi_historical,
@@ -1023,7 +1023,7 @@ async def ai_safety_tips(req: AISafetyTipsRequest):
     try:
         import google.generativeai as genai
         genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel("gemini-2.5-flash")
+        model = genai.GenerativeModel("gemini-2.0-flash")
 
         prompt = f"""You are a public safety advisor AI. Given the following travel context, provide exactly 4 concise, actionable safety tips. Be helpful, not fear-inducing.
 
@@ -1079,3 +1079,77 @@ def _fallback_tips(safety_index: float, incident_types: list[str]) -> list[dict]
     if len(tips) < 4:
         tips.append({"title": "Know Emergency Exits", "description": "Identify nearby safe locations like police stations, hospitals, or well-lit businesses.", "priority": "low"})
     return tips[:4]
+
+
+# ─────────────────────────── Safety Chat (Conversational Q&A) ──────────────────────────
+
+@app.post("/api/safety-chat")
+async def safety_chat(req: SafetyChatRequest):
+    """Conversational safety Q&A powered by Gemini, with location context."""
+
+    if not GEMINI_API_KEY:
+        return {
+            "reply": "I'm sorry, the AI chat service is currently unavailable. Please check back later.",
+            "error": "no_api_key",
+        }
+
+    try:
+        import google.generativeai as genai
+        genai.configure(api_key=GEMINI_API_KEY)
+        # Build location context block
+        context_parts = []
+        if req.locationName:
+            context_parts.append(f"Location: {req.locationName}")
+        if req.safetyIndex is not None:
+            level = "generally safe" if req.safetyIndex >= 70 else "moderate risk" if req.safetyIndex >= 40 else "high risk"
+            context_parts.append(f"Safety Index: {req.safetyIndex}/100 ({level})")
+        if req.incidentTypes:
+            context_parts.append(f"Common incidents nearby: {', '.join(req.incidentTypes)}")
+        if req.riskLevel:
+            context_parts.append(f"Risk Level: {req.riskLevel}")
+        if req.timeOfTravel:
+            context_parts.append(f"Time of travel: {req.timeOfTravel}")
+
+        context_block = "\n".join(context_parts) if context_parts else "No specific location selected."
+
+        system_prompt = f"""You are Lumos Safety Assistant, an expert public safety advisor embedded in a route-safety app. You help users make informed decisions about personal safety while traveling.
+
+Current context:
+{context_block}
+
+Guidelines:
+- Be concise (2-4 sentences per response unless the user asks for detail).
+- Be helpful and informative, not fear-inducing.
+- Base answers on the location context provided. If the user asks about a specific area and you have context, reference it.
+- If you don't have enough context to answer accurately, say so honestly.
+- You can discuss crime trends, safe travel tips, neighborhood safety, best times to travel, and emergency preparedness.
+- Never provide medical, legal, or financial advice.
+- Format responses in plain text (no markdown)."""
+
+        model = genai.GenerativeModel(
+            "gemini-2.0-flash",
+            system_instruction=system_prompt,
+        )
+
+        # Build conversation for Gemini
+        history = []
+        for msg in req.conversationHistory[-10:]:
+            role = "user" if msg.get("role") == "user" else "model"
+            history.append({"role": role, "parts": [msg.get("content", "")]})
+
+        chat = model.start_chat(history=history)
+        result = chat.send_message(
+            req.message,
+            generation_config=genai.types.GenerationConfig(
+                max_output_tokens=512,
+            ),
+        )
+
+        return {"reply": result.text.strip(), "error": None}
+
+    except Exception as e:
+        logger.warning(f"Safety chat error: {e}")
+        return {
+            "reply": "I'm having trouble connecting right now. For immediate safety concerns, please call 911 or your local emergency number.",
+            "error": "fallback",
+        }
