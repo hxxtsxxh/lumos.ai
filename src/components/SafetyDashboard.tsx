@@ -200,8 +200,8 @@ const SafetyDashboard = ({ data, locationName }: SafetyDashboardProps) => {
               const IncIcon = style.Icon;
               return (
                 <div key={incident.type} className="flex items-center gap-2.5">
-                  <div className="w-7 h-7 rounded-lg bg-primary/15 flex items-center justify-center shrink-0">
-                    <IncIcon className="w-3.5 h-3.5 text-primary" />
+                  <div className={`w-7 h-7 rounded-lg ${style.bg} flex items-center justify-center shrink-0`}>
+                    <IncIcon className={`w-3.5 h-3.5 ${style.color}`} />
                   </div>
                   <span className="text-xs text-foreground truncate flex-1">
                     {incident.type}
