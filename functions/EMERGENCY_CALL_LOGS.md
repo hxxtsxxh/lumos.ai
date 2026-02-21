@@ -1,5 +1,23 @@
 # Emergency call (VAPI) — Logging & debugging
 
+## Fixing `custom-llm-500-server-error`
+
+If you see **call.in-progress.error-providerfault-custom-llm-500-server-error**:
+
+1. **Set `GEMINI_API_KEY` in Firebase**  
+   Firebase Functions do **not** read your project `.env`. Set it in:  
+   [Firebase Console](https://console.firebase.google.com/) → **lumos-b2c23** → **Build** → **Functions** → **Environment variables** (or use Google Cloud Console → Cloud Functions → select function → Edit → Environment variables).  
+   Add `GEMINI_API_KEY` with your Gemini API key value.
+
+2. **Redeploy**  
+   After changing env vars, redeploy so the function restarts:  
+   `npm run firebase:deploy`
+
+3. **Behavior after the code update**  
+   The vapiLlm function now **never returns 500**. On any error (missing key, Gemini error, or parsing issue) it returns **200** with a short fallback phrase (e.g. "Could you repeat that, please?") so the call stays connected. Check the function **Logs** for the real error (e.g. `vapiLlm generateWithGemini failed` or `GEMINI_API_KEY not set`).
+
+---
+
 ## Where to see logs
 
 ### 1. Firebase / Google Cloud (backend)

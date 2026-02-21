@@ -19,6 +19,20 @@ function env(name, fallback = "") {
 const callStore = new Map();
 
 /**
+ * Extract plain text from OpenAI-style message content (string or array of parts).
+ */
+function getMessageText(msg) {
+  const c = msg?.content;
+  if (typeof c === "string") return c;
+  if (!c || !Array.isArray(c)) return "";
+  for (const part of c) {
+    if (part && typeof part.text === "string") return part.text;
+    if (part && typeof part.content === "string") return part.content;
+  }
+  return "";
+}
+
+/**
  * Call Gemini REST API to generate the next assistant reply from conversation messages.
  * Returns the assistant text only.
  */
@@ -34,15 +48,15 @@ async function generateWithGemini(messages, geminiKey) {
 
   for (const msg of messages) {
     const role = (msg.role || "user").toLowerCase();
-    const text = typeof msg.content === "string" ? msg.content : (msg.content && msg.content[0] && msg.content[0].text) ? msg.content[0].text : "";
-    if (!text) continue;
+    const text = getMessageText(msg);
+    if (!text || !String(text).trim()) continue;
 
     if (role === "system") {
       systemPrompt = text;
       continue;
     }
     const geminiRole = role === "assistant" ? "model" : "user";
-    contents.push({ role: geminiRole, parts: [{ text }] });
+    contents.push({ role: geminiRole, parts: [{ text: String(text).trim() }] });
   }
 
   if (systemPrompt) {
@@ -89,11 +103,13 @@ async function generateWithGemini(messages, geminiKey) {
   const data = await res.json();
   const candidate = data.candidates && data.candidates[0];
   if (!candidate || !candidate.content || !candidate.content.parts || candidate.content.parts.length === 0) {
-    throw new Error("Gemini returned no content: " + JSON.stringify(data).slice(0, 300));
+    // Safety block or empty response - return fallback so the call continues
+    const reason = candidate?.finishReason || data.promptFeedback?.blockReason || "no content";
+    throw new Error(`Gemini no content (${reason}). Safe fallback will be used.`);
   }
 
-  const text = candidate.content.parts.map((p) => p.text).join("");
-  return text;
+  const text = candidate.content.parts.map((p) => (p && p.text) || "").join("").trim();
+  return text || null;
 }
 
 /**
@@ -138,58 +154,71 @@ exports.vapiLlm = onRequest(
   const geminiKey = env("GEMINI_API_KEY");
   if (!geminiKey) {
         log("error", "vapiLlm GEMINI_API_KEY not set");
-        res.status(500).json({ error: "GEMINI_API_KEY not configured" });
+        // Return 200 with fallback so call doesn't drop; set env in Firebase Console → Functions → Environment variables
+        const fallback = "I'm having a brief connection issue. Please hold—I have the caller's location and details. Can you hear me?";
+        res.set("Content-Type", "application/json");
+        res.status(200).send(JSON.stringify(buildOpenAIResponse(logId, body, fallback)));
         return;
       }
 
-      const assistantText = await generateWithGemini(messages, geminiKey);
-      const durationMs = Date.now() - startTime;
+      let assistantText;
+      try {
+        assistantText = await generateWithGemini(messages, geminiKey);
+      } catch (geminiErr) {
+        log("error", "vapiLlm generateWithGemini failed", {
+          error: geminiErr.message,
+          stack: geminiErr.stack,
+          messageCount: messages.length,
+          messageRoles: messages.map((m) => m?.role),
+          firstContentTypes: messages.slice(0, 3).map((m) => typeof m?.content),
+        });
+        assistantText = "I'm sorry, could you repeat that? I'm still here with the caller's information.";
+      }
 
+      const durationMs = Date.now() - startTime;
+      const content = (assistantText && String(assistantText).trim()) || "Could you repeat that, please?";
       log("info", "vapiLlm Gemini response", {
-        responseLength: assistantText.length,
+        responseLength: content.length,
         durationMs,
-        firstChars: assistantText.slice(0, 80),
+        firstChars: content.slice(0, 80),
       });
 
-      // VAPI expects OpenAI chat completion format. Non-streaming: choices[].message
-      const payload = {
-        id: `chatcmpl-${logId}`,
-        object: "chat.completion",
-        created: Math.floor(Date.now() / 1000),
-        model: body.model || "gpt-3.5-turbo",
-        choices: [
-          {
-            index: 0,
-            message: {
-              role: "assistant",
-              content: assistantText,
-            },
-            finish_reason: "stop",
-          },
-        ],
-        usage: {
-          prompt_tokens: 0,
-          completion_tokens: 0,
-          total_tokens: 0,
-        },
-      };
-
+      const payload = buildOpenAIResponse(logId, body, content);
       res.set("Content-Type", "application/json");
       res.status(200).send(JSON.stringify(payload));
     } catch (err) {
       const durationMs = Date.now() - startTime;
+      const bodySafe = typeof req.body === "object" && req.body !== null ? req.body : {};
       log("error", "vapiLlm failed", {
         error: err.message,
         stack: err.stack,
         durationMs,
+        messageCount: Array.isArray(bodySafe.messages) ? bodySafe.messages.length : 0,
       });
-      res.status(500).json({
-        error: "vapiLlm error",
-        message: err.message,
-      });
+      // Always return 200 with fallback so VAPI doesn't drop the call with 500
+      const fallback = "Please hold—I'm still relaying the caller's information. Can you hear me?";
+      res.set("Content-Type", "application/json");
+      res.status(200).send(JSON.stringify(buildOpenAIResponse(logId, bodySafe, fallback)));
     }
   }
 );
+
+function buildOpenAIResponse(logId, body, content) {
+  return {
+    id: `chatcmpl-${logId}`,
+    object: "chat.completion",
+    created: Math.floor(Date.now() / 1000),
+    model: (body && body.model) || "gpt-3.5-turbo",
+    choices: [
+      {
+        index: 0,
+        message: { role: "assistant", content: String(content) },
+        finish_reason: "stop",
+      },
+    ],
+    usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+  };
+}
 
 /**
  * Start an outbound emergency call via VAPI. Called from the frontend when user taps "Start call".

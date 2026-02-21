@@ -12,6 +12,11 @@ interface WalkWithMeProps {
   onPositionUpdate?: (lat: number, lng: number) => void;
 }
 
+// Throttle map marker updates; map-side lerp makes motion smooth between updates
+const MARKER_UPDATE_INTERVAL_MS = 1200;
+// Strong smoothing for a silky path (0.35 = 65% history, 35% new)
+const SMOOTHING_WEIGHT_CURRENT = 0.35;
+
 const WalkWithMe = ({ destLat, destLng, destName, routeSafetyScore, onStop, onPositionUpdate }: WalkWithMeProps) => {
   const [position, setPosition] = useState<{ lat: number; lng: number } | null>(null);
   const [distanceRemaining, setDistanceRemaining] = useState<number | null>(null);
@@ -19,6 +24,8 @@ const WalkWithMe = ({ destLat, destLng, destName, routeSafetyScore, onStop, onPo
   const [sharing, setSharing] = useState(false);
   const watchRef = useRef<number | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastMarkerUpdateRef = useRef<number>(0);
+  const smoothedRef = useRef<{ lat: number; lng: number } | null>(null);
 
   // Haversine distance in meters
   const getDistance = useCallback((lat1: number, lng1: number, lat2: number, lng2: number) => {
@@ -42,7 +49,6 @@ const WalkWithMe = ({ destLat, destLng, destName, routeSafetyScore, onStop, onPo
       (pos) => {
         const { latitude: lat, longitude: lng } = pos.coords;
         setPosition({ lat, lng });
-        onPositionUpdate?.(lat, lng);
 
         const dist = getDistance(lat, lng, destLat, destLng);
         setDistanceRemaining(dist);
@@ -51,6 +57,18 @@ const WalkWithMe = ({ destLat, destLng, destName, routeSafetyScore, onStop, onPo
         if (dist < 50) {
           toast.success('You have arrived at your destination!', { duration: 5000 });
           onStop();
+        }
+
+        // Throttle + smooth marker updates to reduce choppiness
+        const now = Date.now();
+        if (now - lastMarkerUpdateRef.current >= MARKER_UPDATE_INTERVAL_MS) {
+          lastMarkerUpdateRef.current = now;
+          const prev = smoothedRef.current;
+          const w = SMOOTHING_WEIGHT_CURRENT;
+          const sendLat = prev ? prev.lat * (1 - w) + lat * w : lat;
+          const sendLng = prev ? prev.lng * (1 - w) + lng * w : lng;
+          smoothedRef.current = { lat: sendLat, lng: sendLng };
+          onPositionUpdate?.(sendLat, sendLng);
         }
       },
       (err) => {

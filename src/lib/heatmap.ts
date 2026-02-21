@@ -485,9 +485,46 @@ export function removeDestinationMarker() {
 }
 
 let _userMarker: mapboxgl.Marker | null = null;
-export function updateUserMarker(map: mapboxgl.Map, lat: number, lng: number) {
+let _userMarkerTarget: { lng: number; lat: number } | null = null;
+let _userMarkerRafId: number | null = null;
+
+const USER_MARKER_LERP = 0.14; // per-frame blend toward target (smooth glide)
+const USER_MARKER_CLOSE_ENOUGH = 1e-6; // degrees, stop animating when this close
+
+function _userMarkerAnimate(map: mapboxgl.Map) {
+  if (!_userMarker || !_userMarkerTarget) {
+    _userMarkerRafId = null;
+    return;
+  }
+  const current = _userMarker.getLngLat();
+  const lng = current.lng + (_userMarkerTarget.lng - current.lng) * USER_MARKER_LERP;
+  const lat = current.lat + (_userMarkerTarget.lat - current.lat) * USER_MARKER_LERP;
+  _userMarker.setLngLat([lng, lat]);
+  const dist = Math.abs(lng - _userMarkerTarget.lng) + Math.abs(lat - _userMarkerTarget.lat);
+  if (dist < USER_MARKER_CLOSE_ENOUGH) {
+    _userMarker.setLngLat([_userMarkerTarget.lng, _userMarkerTarget.lat]);
+    _userMarkerRafId = null;
+    return;
+  }
+  _userMarkerRafId = requestAnimationFrame(() => _userMarkerAnimate(map));
+}
+
+export function updateUserMarker(map: mapboxgl.Map, lat: number, lng: number, options?: { instant?: boolean }) {
+  if (options?.instant) {
+    if (_userMarkerRafId !== null) {
+      cancelAnimationFrame(_userMarkerRafId);
+      _userMarkerRafId = null;
+    }
+    _userMarkerTarget = null;
+  } else {
+    _userMarkerTarget = { lng, lat };
+  }
   if (_userMarker) {
-    _userMarker.setLngLat([lng, lat]);
+    if (options?.instant) {
+      _userMarker.setLngLat([lng, lat]);
+    } else if (_userMarkerRafId === null) {
+      _userMarkerRafId = requestAnimationFrame(() => _userMarkerAnimate(map));
+    }
   } else {
     const el = document.createElement('div');
     el.className = 'user-location-marker';
@@ -500,10 +537,16 @@ export function updateUserMarker(map: mapboxgl.Map, lat: number, lng: number) {
     `;
     el.style.cssText = `filter: drop-shadow(0 2px 6px rgba(0,0,0,0.35)); cursor: default;`;
     _userMarker = new mapboxgl.Marker({ element: el, anchor: 'bottom' }).setLngLat([lng, lat]).addTo(map);
+    _userMarkerTarget = null;
   }
 }
 
 export function removeUserMarker() {
+  if (_userMarkerRafId !== null) {
+    cancelAnimationFrame(_userMarkerRafId);
+    _userMarkerRafId = null;
+  }
+  _userMarkerTarget = null;
   _userMarker?.remove();
   _userMarker = null;
 }

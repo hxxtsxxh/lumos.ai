@@ -252,7 +252,10 @@ export interface EmergencyCallPayload {
 const useFirebaseEmergency =
   (import.meta.env.VITE_USE_FIREBASE_EMERGENCY ?? 'true') !== 'false';
 
+const EMERGENCY_LOG = '[LUMOS emergency]';
+
 export async function startEmergencyCall(payload: EmergencyCallPayload): Promise<{ callId: string; status: string; message: string }> {
+  console.log(EMERGENCY_LOG, 'startEmergencyCall', { useFirebase: useFirebaseEmergency, payload: { ...payload, userNotes: payload.userNotes?.slice(0, 50) } });
   if (useFirebaseEmergency) {
     const startCall = httpsCallable<
       EmergencyCallPayload,
@@ -260,6 +263,7 @@ export async function startEmergencyCall(payload: EmergencyCallPayload): Promise
     >(functions, 'startEmergencyCall');
     const result = await startCall(payload);
     const data = result.data as { callId: string; status: string; message: string } | undefined;
+    console.log(EMERGENCY_LOG, 'startEmergencyCall result', { callId: data?.callId, status: data?.status });
     if (!data?.callId) throw new Error('Failed to start emergency call');
     return { callId: data.callId, status: data.status ?? 'started', message: data.message ?? '' };
   }
@@ -276,12 +280,14 @@ export async function startEmergencyCall(payload: EmergencyCallPayload): Promise
 }
 
 export async function sendEmergencyCallUpdate(callId: string, message: string): Promise<void> {
+  console.log(EMERGENCY_LOG, 'sendEmergencyCallUpdate', { callId, messageLength: message.length });
   if (useFirebaseEmergency) {
     const sendUpdate = httpsCallable<{ callId: string; message: string }, { ok: boolean }>(
       functions,
       'emergencyCallMessage'
     );
     await sendUpdate({ callId, message });
+    console.log(EMERGENCY_LOG, 'sendEmergencyCallUpdate done');
     return;
   }
   const res = await fetch(`${API_BASE_URL}/api/emergency-call/${callId}/message`, {
@@ -293,9 +299,11 @@ export async function sendEmergencyCallUpdate(callId: string, message: string): 
 }
 
 export async function endEmergencyCall(callId: string): Promise<void> {
+  console.log(EMERGENCY_LOG, 'endEmergencyCall', { callId });
   if (useFirebaseEmergency) {
     const endCall = httpsCallable<{ callId: string }, { ok: boolean }>(functions, 'emergencyCallEnd');
     await endCall({ callId });
+    console.log(EMERGENCY_LOG, 'endEmergencyCall done');
     return;
   }
   const res = await fetch(`${API_BASE_URL}/api/emergency-call/${callId}/end`, {

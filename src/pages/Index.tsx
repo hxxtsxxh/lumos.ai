@@ -91,6 +91,10 @@ const Index = () => {
   const [isWalking, setIsWalking] = useState(false);
   const [currentLocationText, setCurrentLocationText] = useState('');
   const [isLocating, setIsLocating] = useState(false);
+  const [myLocationTrackingOn, setMyLocationTrackingOn] = useState(false);
+  const myLocationWatchIdRef = useRef<number | null>(null);
+  const myLocationLastUpdateRef = useRef<number>(0);
+  const myLocationSmoothedRef = useRef<{ lat: number; lng: number } | null>(null);
 
   // Citizen live-incident heatmap state
   const [showCitizenHeatmap, setShowCitizenHeatmap] = useState(true);
@@ -105,6 +109,16 @@ const Index = () => {
 
   // Emergency call (VAPI) modal
   const [emergencyCallModalOpen, setEmergencyCallModalOpen] = useState(false);
+
+  // Clean up "My location" watch on unmount
+  useEffect(() => {
+    return () => {
+      if (myLocationWatchIdRef.current !== null) {
+        navigator.geolocation.clearWatch(myLocationWatchIdRef.current);
+        myLocationWatchIdRef.current = null;
+      }
+    };
+  }, []);
 
   // Keyboard shortcut: '/' focuses search
   useEffect(() => {
@@ -616,39 +630,80 @@ const Index = () => {
 
   // ─── Walk With Me ───
   const handleStartWalk = useCallback(() => {
+    if (myLocationWatchIdRef.current !== null) {
+      navigator.geolocation.clearWatch(myLocationWatchIdRef.current);
+      myLocationWatchIdRef.current = null;
+      setMyLocationTrackingOn(false);
+    }
     setIsWalking(true);
     toast.success('Walk tracking started', { description: 'Stay safe!' });
   }, []);
 
   const handleStopWalk = useCallback(() => {
     setIsWalking(false);
-    if (mapRef.current) removeUserMarker();
+    if (!myLocationTrackingOn && mapRef.current) removeUserMarker();
     toast.info('Walk tracking stopped');
-  }, []);
+  }, [myLocationTrackingOn]);
 
   const handleWalkPositionUpdate = useCallback((lat: number, lng: number) => {
     if (mapRef.current) updateUserMarker(mapRef.current, lat, lng);
   }, []);
 
-  // Show my location: place marker and fly map to user (works on landing and results)
+  // Throttle + smoothing for "My location" continuous updates (same as Walk With Me)
+  const MY_LOCATION_UPDATE_INTERVAL_MS = 1200;
+  const MY_LOCATION_SMOOTHING_WEIGHT = 0.35;
+
+  // My location: toggle continuous smooth tracking on the map
   const handleShowMyLocation = useCallback(() => {
     if (!navigator.geolocation) {
       toast.error('Geolocation not supported', { description: 'Use a browser that supports location.' });
       return;
     }
+
+    if (myLocationTrackingOn) {
+      if (myLocationWatchIdRef.current !== null) {
+        navigator.geolocation.clearWatch(myLocationWatchIdRef.current);
+        myLocationWatchIdRef.current = null;
+      }
+      setMyLocationTrackingOn(false);
+      if (!isWalking && mapRef.current) removeUserMarker();
+      toast.info('Location tracking off');
+      return;
+    }
+
     setIsLocating(true);
     navigator.geolocation.getCurrentPosition(
       (pos) => {
         const { latitude, longitude } = pos.coords;
         const map = mapRef.current;
         if (map) {
-          updateUserMarker(map, latitude, longitude);
+          updateUserMarker(map, latitude, longitude, { instant: true });
           flyToLocation(map, latitude, longitude, undefined, { duration: 1800 });
-          toast.success('Showing your location', { description: 'You can see nearby safe spots and risk areas on the map.' });
-        } else {
-          toast.success('Location found', { description: `${latitude.toFixed(4)}, ${longitude.toFixed(4)}` });
         }
+        myLocationSmoothedRef.current = { lat: latitude, lng: longitude };
+        myLocationLastUpdateRef.current = Date.now();
+        setMyLocationTrackingOn(true);
         setIsLocating(false);
+        toast.success('Location tracking on', { description: 'Map will update smoothly as you move.' });
+
+        myLocationWatchIdRef.current = navigator.geolocation.watchPosition(
+          (p) => {
+            const lat = p.coords.latitude;
+            const lng = p.coords.longitude;
+            const now = Date.now();
+            if (now - myLocationLastUpdateRef.current >= MY_LOCATION_UPDATE_INTERVAL_MS && mapRef.current) {
+              myLocationLastUpdateRef.current = now;
+              const prev = myLocationSmoothedRef.current;
+              const w = MY_LOCATION_SMOOTHING_WEIGHT;
+              const sendLat = prev ? prev.lat * (1 - w) + lat * w : lat;
+              const sendLng = prev ? prev.lng * (1 - w) + lng * w : lng;
+              myLocationSmoothedRef.current = { lat: sendLat, lng: sendLng };
+              updateUserMarker(mapRef.current, sendLat, sendLng);
+            }
+          },
+          () => {},
+          { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 }
+        );
       },
       () => {
         toast.error('Location unavailable', { description: 'Enable location permissions or try again.' });
@@ -656,7 +711,7 @@ const Index = () => {
       },
       { enableHighAccuracy: true, timeout: 12000, maximumAge: 60000 }
     );
-  }, []);
+  }, [myLocationTrackingOn, isWalking]);
 
   // ─── Save / Load ───
   const handleSaveReport = async () => {
@@ -755,12 +810,13 @@ const Index = () => {
               animate={{ opacity: 1 }}
               onClick={handleShowMyLocation}
               disabled={isLocating}
-              className="header-btn flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors glass-panel px-2.5 sm:px-3 py-2 rounded-xl disabled:opacity-60 flex-shrink-0"
-              title="Show my location on the map"
-              aria-label="Show my location"
+              className={`header-btn flex items-center gap-1.5 text-sm transition-colors glass-panel px-2.5 sm:px-3 py-2 rounded-xl disabled:opacity-60 flex-shrink-0 ${myLocationTrackingOn ? 'text-primary' : 'text-muted-foreground hover:text-foreground'}`}
+              title={myLocationTrackingOn ? 'Stop tracking my location' : 'Show my location (tracking updates as you move)'}
+              aria-label={myLocationTrackingOn ? 'Stop tracking my location' : 'Show my location'}
+              aria-pressed={myLocationTrackingOn}
             >
-              <LocateFixed className={`w-4 h-4 ${isLocating ? 'animate-pulse' : ''}`} />
-              <span className="hidden sm:inline">My location</span>
+              <LocateFixed className={`w-4 h-4 ${isLocating ? 'animate-pulse' : ''} ${myLocationTrackingOn ? 'text-primary' : ''}`} />
+              <span className="hidden sm:inline">{myLocationTrackingOn ? 'Tracking' : 'My location'}</span>
             </motion.button>
           )}
           {appState === 'results' && (
