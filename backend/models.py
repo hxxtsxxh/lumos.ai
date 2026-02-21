@@ -151,3 +151,13 @@ class AISafetyTipsRequest(BaseModel):
     timeOfTravel: str = "12:00"
     peopleCount: int = 1
     gender: str = "prefer-not-to-say"
+
+
+class SafetyChatRequest(BaseModel):
+    message: str
+    locationName: str = ""
+    safetyIndex: float | None = None
+    incidentTypes: list[str] = []
+    riskLevel: str = ""
+    timeOfTravel: str = ""
+    conversationHistory: list[dict] = []

@@ -20,7 +20,11 @@ import ThemeToggle from '@/components/ThemeToggle';
 import RouteSafetyPanel from '@/components/RouteSafetyPanel';
 import HeatmapLegend from '@/components/HeatmapLegend';
 import WalkWithMe from '@/components/WalkWithMe';
+
+import SafetyChatWidget from '@/components/SafetyChatWidget';
+
 import { EmergencyCallModal } from '@/components/EmergencyCallModal';
+
 import { geocodeLocation, fetchSafetyScore, fetchRouteAnalysis, fetchCitizenHotspots, type FullSafetyResponse, type HeatmapPoint } from '@/lib/api';
 import { useTheme } from '@/hooks/useTheme';
 import {
@@ -920,10 +924,10 @@ const Index = () => {
           transition={{ duration: 0.5 }}
           className="absolute inset-0 z-10 pointer-events-none"
         >
-          {/* ─── Desktop: side-by-side panels (unchanged) ─── */}
-          <div className="h-full hidden md:flex md:flex-row">
+          {/* ─── Desktop: side-by-side panels ─── */}
+          <div className="h-full hidden lg:flex lg:flex-row">
             {/* Left panel */}
-            <div className="w-full md:w-[380px] lg:w-[420px] p-3 sm:p-6 pt-16 sm:pt-24 md:overflow-y-auto pointer-events-auto space-y-3 sm:space-y-4 scrollbar-hide relative z-10">
+            <div className="w-full lg:w-[380px] xl:w-[420px] p-3 sm:p-6 pt-16 sm:pt-24 lg:overflow-y-auto pointer-events-auto space-y-3 sm:space-y-4 scrollbar-hide relative z-10">
               <RouteSearchBar
                 onSearchSingle={handleSearchSingle}
                 onSearchRoute={handleSearchRoute}
@@ -960,7 +964,7 @@ const Index = () => {
             <div className="flex-1 pointer-events-none" />
 
             {/* Right panel */}
-            <div className="w-full md:w-[360px] lg:w-[380px] relative pointer-events-auto flex flex-col">
+            <div className="w-full lg:w-[360px] xl:w-[380px] relative pointer-events-auto flex flex-col">
               <div
                 className="absolute top-0 left-0 right-0 h-16 z-10 pointer-events-none"
                 style={{
@@ -1057,7 +1061,7 @@ const Index = () => {
           </div>
 
           {/* ─── Mobile: collapsible bottom sheet ─── */}
-          <div className="md:hidden absolute inset-x-0 bottom-0 z-20 pointer-events-auto flex flex-col" style={{ top: mobilePanelOpen ? '56px' : 'auto' }}>
+          <div className="lg:hidden absolute inset-x-0 bottom-0 z-20 pointer-events-auto flex flex-col" style={{ top: mobilePanelOpen ? '56px' : 'auto' }}>
             {/* Peek bar — always visible */}
             <button
               onClick={() => setMobilePanelOpen(!mobilePanelOpen)}
@@ -1239,9 +1243,9 @@ const Index = () => {
           className="absolute inset-0 z-10 pointer-events-none"
         >
           {/* ─── Desktop: side-by-side panels ─── */}
-          <div className="h-full hidden md:flex md:flex-row">
+          <div className="h-full hidden lg:flex lg:flex-row">
             {/* Left panel */}
-            <div className="w-full md:w-[380px] lg:w-[420px] p-3 sm:p-6 pt-16 sm:pt-24 md:overflow-y-auto pointer-events-auto space-y-3 sm:space-y-4 scrollbar-hide relative z-10">
+            <div className="w-full lg:w-[380px] xl:w-[420px] p-3 sm:p-6 pt-16 sm:pt-24 lg:overflow-y-auto pointer-events-auto space-y-3 sm:space-y-4 scrollbar-hide relative z-10">
               <RouteSearchBar
                 onSearchSingle={handleSearchSingle}
                 onSearchRoute={handleSearchRoute}
@@ -1277,7 +1281,7 @@ const Index = () => {
             <div className="flex-1 pointer-events-none" />
 
             {/* Right panel */}
-            <div className="w-full md:w-[360px] lg:w-[380px] relative pointer-events-auto flex flex-col">
+            <div className="w-full lg:w-[360px] xl:w-[380px] relative pointer-events-auto flex flex-col">
               <div
                 className="absolute top-0 left-0 right-0 h-16 z-10 pointer-events-none"
                 style={{
@@ -1327,7 +1331,7 @@ const Index = () => {
           </div>
 
           {/* ─── Mobile: collapsible bottom sheet ─── */}
-          <div className="md:hidden absolute inset-x-0 bottom-0 z-20 pointer-events-auto flex flex-col" style={{ top: mobilePanelOpen ? '56px' : 'auto' }}>
+          <div className="lg:hidden absolute inset-x-0 bottom-0 z-20 pointer-events-auto flex flex-col" style={{ top: mobilePanelOpen ? '56px' : 'auto' }}>
             {/* Peek bar */}
             <button
               onClick={() => setMobilePanelOpen(!mobilePanelOpen)}
@@ -1461,6 +1465,14 @@ const Index = () => {
         isOpen={savedPanelOpen}
         onClose={() => setSavedPanelOpen(false)}
         onLoadReport={handleLoadReport}
+      />
+
+      {/* Safety Chat Widget */}
+      <SafetyChatWidget
+        locationName={locationName}
+        safetyData={safetyData}
+        routeData={routeData}
+        params={params}
       />
 
     </div>

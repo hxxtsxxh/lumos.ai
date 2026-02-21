@@ -1115,7 +1115,7 @@ async def gemini_enrich_heatmap(
     try:
         import google.generativeai as genai
         genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel("gemini-2.5-flash")
+        model = genai.GenerativeModel("gemini-2.0-flash")
 
         crime_level = _classify_crime_level(crime_rate)
         time_label = "daytime" if 7 <= hour < 18 else "evening" if 18 <= hour < 22 else "late night"
@@ -1220,7 +1220,7 @@ async def gemini_refine_score(
     try:
         import google.generativeai as genai
         genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel("gemini-2.5-flash")
+        model = genai.GenerativeModel("gemini-2.0-flash")
 
         risk_label = "safe" if ml_score >= 70 else "moderate risk" if ml_score >= 40 else "high risk"
         time_label = "daytime" if 7 <= hour < 18 else "evening" if 18 <= hour < 22 else "late night"
