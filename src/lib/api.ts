@@ -180,3 +180,22 @@ export async function fetchUserReports(lat: number, lng: number, radius: number 
   const data = await res.json();
   return data.reports || [];
 }
+
+// ─── Safety Chat (Conversational Q&A) ───
+export async function sendSafetyChatMessage(payload: {
+  message: string;
+  locationName: string;
+  safetyIndex: number | null;
+  incidentTypes: string[];
+  riskLevel: string;
+  timeOfTravel: string;
+  conversationHistory: { role: 'user' | 'assistant'; content: string }[];
+}): Promise<{ reply: string; error: string | null }> {
+  const res = await fetch(`${API_BASE_URL}/api/safety-chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(`Chat request failed: ${res.status}`);
+  return res.json();
+}
