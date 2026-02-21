@@ -1,0 +1,401 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 222 47% 6%;
+    --foreground: 210 40% 96%;
+
+    --card: 222 44% 10%;
+    --card-foreground: 210 40% 96%;
+
+    --popover: 222 44% 10%;
+    --popover-foreground: 210 40% 96%;
+
+    --primary: 38 92% 55%;
+    --primary-foreground: 222 47% 6%;
+
+    --secondary: 222 30% 16%;
+    --secondary-foreground: 210 40% 90%;
+
+    --muted: 222 30% 14%;
+    --muted-foreground: 215 20% 55%;
+
+    --accent: 38 80% 50%;
+    --accent-foreground: 222 47% 6%;
+
+    --destructive: 0 72% 55%;
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 222 30% 18%;
+    --input: 222 30% 18%;
+    --ring: 38 92% 55%;
+
+    --radius: 0.75rem;
+
+    /* Lumos custom tokens */
+    --lumos-navy: 222 47% 6%;
+    --lumos-navy-light: 222 44% 12%;
+    --lumos-amber: 38 92% 55%;
+    --lumos-amber-glow: 38 100% 65%;
+    --lumos-teal: 174 62% 47%;
+    --lumos-safe: 152 60% 48%;
+    --lumos-caution: 38 92% 55%;
+    --lumos-danger: 0 72% 55%;
+    --lumos-glass: 222 40% 12%;
+    --lumos-glass-border: 222 30% 20%;
+
+    --sidebar-background: 222 47% 6%;
+    --sidebar-foreground: 210 40% 96%;
+    --sidebar-primary: 38 92% 55%;
+    --sidebar-primary-foreground: 222 47% 6%;
+    --sidebar-accent: 222 30% 16%;
+    --sidebar-accent-foreground: 210 40% 96%;
+    --sidebar-border: 222 30% 18%;
+    --sidebar-ring: 38 92% 55%;
+  }
+
+  .light {
+    --background: 220 20% 97%;
+    --foreground: 222 47% 11%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+
+    --primary: 38 92% 45%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 220 16% 93%;
+    --secondary-foreground: 222 47% 15%;
+
+    --muted: 220 14% 94%;
+    --muted-foreground: 215 16% 42%;
+
+    --accent: 38 80% 45%;
+    --accent-foreground: 0 0% 100%;
+
+    --destructive: 0 72% 50%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 220 16% 84%;
+    --input: 220 16% 84%;
+    --ring: 38 92% 45%;
+
+    --lumos-navy: 220 20% 97%;
+    --lumos-navy-light: 220 16% 94%;
+    --lumos-amber: 38 92% 45%;
+    --lumos-amber-glow: 38 100% 55%;
+    --lumos-teal: 174 62% 35%;
+    --lumos-safe: 152 60% 35%;
+    --lumos-caution: 38 92% 42%;
+    --lumos-danger: 0 72% 48%;
+    --lumos-glass: 0 0% 100%;
+    --lumos-glass-border: 220 16% 84%;
+
+    /* Light mode overlay gradient token */
+    --lumos-overlay-color: 220 20% 97%;
+
+    --sidebar-background: 0 0% 100%;
+    --sidebar-foreground: 222 47% 11%;
+    --sidebar-primary: 38 92% 45%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 220 14% 92%;
+    --sidebar-accent-foreground: 222 47% 11%;
+    --sidebar-border: 220 16% 84%;
+    --sidebar-ring: 38 92% 45%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans;
+    font-family: 'Inter', system-ui, sans-serif;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Space Grotesk', system-ui, sans-serif;
+  }
+}
+
+@layer components {
+  .glass-panel {
+    @apply bg-[hsl(var(--lumos-glass)/0.7)] backdrop-blur-xl border border-[hsl(var(--lumos-glass-border)/0.5)] rounded-2xl;
+  }
+
+  .light .glass-panel {
+    @apply bg-[hsl(var(--lumos-glass)/0.85)] border-[hsl(var(--lumos-glass-border)/0.6)];
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04), 0 4px 12px rgba(0,0,0,0.03);
+  }
+
+  /* Google-style search bar */
+  .search-bar-container {
+    background: hsl(var(--lumos-glass) / 0.55);
+    backdrop-filter: blur(24px);
+    border: 1px solid hsl(var(--lumos-glass-border) / 0.3);
+    box-shadow:
+      0 1px 3px 0 rgba(0, 0, 0, 0.12),
+      0 4px 12px 0 rgba(0, 0, 0, 0.08);
+    transition: box-shadow 0.3s ease, border-color 0.3s ease, background 0.3s ease;
+  }
+  .search-bar-container:hover {
+    background: hsl(var(--lumos-glass) / 0.65);
+    box-shadow:
+      0 1px 3px 0 rgba(0, 0, 0, 0.16),
+      0 6px 20px 0 rgba(0, 0, 0, 0.12);
+    border-color: hsl(var(--lumos-glass-border) / 0.45);
+  }
+  .search-bar-container.search-bar-focused {
+    background: hsl(var(--lumos-glass) / 0.7);
+    box-shadow:
+      0 1px 3px 0 rgba(0, 0, 0, 0.18),
+      0 8px 24px 0 rgba(0, 0, 0, 0.14);
+    border-color: hsl(var(--lumos-glass-border) / 0.55);
+  }
+  .search-dropdown-container {
+    background: hsl(var(--lumos-glass) / 0.65);
+    backdrop-filter: blur(24px);
+    border: 1px solid hsl(var(--lumos-glass-border) / 0.3);
+    border-top: none;
+    box-shadow:
+      0 4px 12px 0 rgba(0, 0, 0, 0.08),
+      0 8px 24px 0 rgba(0, 0, 0, 0.1);
+  }
+  .light .search-bar-container {
+    background: hsl(var(--lumos-glass) / 0.7);
+    border-color: hsl(var(--lumos-glass-border) / 0.4);
+    box-shadow:
+      0 1px 3px 0 rgba(0, 0, 0, 0.06),
+      0 4px 12px 0 rgba(0, 0, 0, 0.04);
+  }
+  .light .search-bar-container:hover {
+    background: hsl(var(--lumos-glass) / 0.8);
+    box-shadow:
+      0 1px 3px 0 rgba(0, 0, 0, 0.1),
+      0 6px 20px 0 rgba(0, 0, 0, 0.06);
+  }
+  .light .search-bar-container.search-bar-focused {
+    background: hsl(var(--lumos-glass) / 0.85);
+    box-shadow:
+      0 1px 3px 0 rgba(0, 0, 0, 0.1),
+      0 8px 24px 0 rgba(0, 0, 0, 0.08);
+  }
+  .light .search-dropdown-container {
+    background: hsl(var(--lumos-glass) / 0.75);
+    border-color: hsl(var(--lumos-glass-border) / 0.4);
+    box-shadow:
+      0 4px 12px 0 rgba(0, 0, 0, 0.04),
+      0 8px 24px 0 rgba(0, 0, 0, 0.06);
+  }
+
+  .glow-safe {
+    box-shadow: 0 0 30px -8px hsl(var(--lumos-safe) / 0.4);
+  }
+
+  .glow-caution {
+    box-shadow: 0 0 30px -8px hsl(var(--lumos-caution) / 0.4);
+  }
+
+  .glow-danger {
+    box-shadow: 0 0 30px -8px hsl(var(--lumos-danger) / 0.4);
+  }
+
+  .light .glow-safe {
+    box-shadow: 0 0 24px -6px hsl(var(--lumos-safe) / 0.25), 0 1px 3px rgba(0,0,0,0.06);
+  }
+
+  .light .glow-caution {
+    box-shadow: 0 0 24px -6px hsl(var(--lumos-caution) / 0.25), 0 1px 3px rgba(0,0,0,0.06);
+  }
+
+  .light .glow-danger {
+    box-shadow: 0 0 24px -6px hsl(var(--lumos-danger) / 0.25), 0 1px 3px rgba(0,0,0,0.06);
+  }
+
+  .safety-gradient-safe {
+    background: linear-gradient(135deg, hsl(var(--lumos-safe)), hsl(var(--lumos-teal)));
+  }
+
+  .safety-gradient-caution {
+    background: linear-gradient(135deg, hsl(var(--lumos-caution)), hsl(38 80% 45%));
+  }
+
+  .safety-gradient-danger {
+    background: linear-gradient(135deg, hsl(var(--lumos-danger)), hsl(15 80% 50%));
+  }
+}
+
+/* Mapbox overrides */
+.mapboxgl-canvas {
+  outline: none;
+}
+
+.mapboxgl-ctrl-bottom-left,
+.mapboxgl-ctrl-bottom-right {
+  display: none !important;
+}
+
+/* Marker tooltip popup — grey box + dark blue text for readability on map */
+.map-marker-popup .mapboxgl-popup-content {
+  padding: 10px 14px;
+  border-radius: 8px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35);
+  background: hsl(0 0% 96%);
+  border: 1px solid hsl(0 0% 88%);
+}
+
+/* Heatmap hover popup (crime + citizen) */
+.heatmap-popup .mapboxgl-popup-content {
+  padding: 0;
+  border-radius: 10px;
+  background: hsl(var(--card));
+  border: 1px solid hsl(var(--border));
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.2);
+  color: hsl(var(--card-foreground));
+}
+.heatmap-popup .mapboxgl-popup-tip {
+  border-top-color: hsl(var(--card));
+}
+.map-marker-tooltip {
+  font-size: 14px;
+  font-weight: 700;
+  color: hsl(221 55% 22%);
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.map-marker-tooltip .text-muted-foreground {
+  font-weight: 500;
+  color: hsl(221 45% 32%);
+  white-space: normal;
+}
+
+/* Header buttons: no bounding boxes in light mode */
+.light .header-btn {
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+.light .header-btn:hover {
+  background: hsl(var(--secondary) / 0.6) !important;
+}
+
+/* Scrollbar hide utility */
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Light mode: high contrast + light white highlight for landing subtitle */
+.light .landing-subtitle {
+  color: hsl(222 47% 15%);
+  font-weight: 700;
+  background: rgba(255, 255, 255, 0.65);
+  padding: 0.35em 0.6em;
+  border-radius: 0.5rem;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+:root:not(.light) .landing-subtitle {
+  color: hsl(var(--muted-foreground));
+}
+
+/* Light mode: Mapbox popup styling */
+.light .mapboxgl-popup-content {
+  background: hsl(0 0% 100%) !important;
+  border: 1px solid hsl(220 16% 84%) !important;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.08), 0 1px 3px rgba(0,0,0,0.04) !important;
+}
+
+/* Light mode: recharts tooltip overrides */
+.light .recharts-default-tooltip {
+  background: hsl(0 0% 100%) !important;
+  border-color: hsl(220 16% 84%) !important;
+  color: hsl(222 47% 11%) !important;
+}
+
+/* ─── Mobile Responsiveness ─────────────────────────────── */
+
+/* Safe-area insets for notched devices (iPhone X+, etc.) */
+@supports (padding-bottom: env(safe-area-inset-bottom)) {
+  .pb-safe {
+    padding-bottom: max(1rem, env(safe-area-inset-bottom));
+  }
+  .pt-safe {
+    padding-top: max(0.5rem, env(safe-area-inset-top));
+  }
+}
+
+/* Prevent text size adjustment on orientation change */
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+/* Smoother scrolling on iOS */
+.mobile-scroll {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+}
+
+/* Mobile: reduce overlay gradient to give more map visibility */
+@media (max-width: 767px) {
+  /* Mapbox: show compact attribution */
+  .mapboxgl-ctrl-attrib {
+    font-size: 9px !important;
+  }
+  
+  /* Larger popup close buttons for touch */
+  .mapboxgl-popup-close-button {
+    font-size: 20px;
+    padding: 4px 8px;
+  }
+
+  /* Recharts tooltip on mobile — ensure it doesn't overflow */
+  .recharts-tooltip-wrapper {
+    max-width: 200px !important;
+  }
+  
+  /* Ensure glass panels don't clip on small viewports */
+  .glass-panel {
+    max-width: 100%;
+  }
+}
+
+/* Touch-friendly: ensure minimum tap target on coarse pointers */
+@media (hover: none) and (pointer: coarse) {
+  .header-btn {
+    min-height: 40px;
+    min-width: 40px;
+  }
+}
+
+/* Mobile bottom sheet drag handle */
+.drag-handle {
+  width: 36px;
+  height: 4px;
+  border-radius: 2px;
+  background: hsl(var(--muted-foreground) / 0.3);
+  margin: 0 auto;
+}
+
+/* Hide keyboard shortcut hints on touch devices */
+@media (hover: none) and (pointer: coarse) {
+  .keyboard-hint {
+    display: none !important;
+  }
+}

@@ -1,0 +1,891 @@
+"""Lumos Backend — NIBRS Data Pipeline
+
+Loads and processes NIBRS (National Incident-Based Reporting System) data:
+  - GA-2018: from local CSV files for Georgia
+  - All other states: derived from FBI CDE API data + BJS temporal research
+
+Provides:
+  - Hourly crime distribution
+  - Offense severity weights
+  - Location-type conditional probabilities
+  - Victim demographic risk factors
+  - Weapon involvement rates
+"""
+
+import csv
+import logging
+import os
+from collections import defaultdict
+from pathlib import Path
+from typing import Optional
+
+import numpy as np
+
+logger = logging.getLogger("lumos.nibrs")
+
+# Path to the datasets directory (contains GA-2018 through GA-2024)
+_DATASETS_BASE = Path(__file__).resolve().parent.parent / "datasets"
+
+# All GA year directories to load
+_GA_YEARS = [f"GA-{y}" for y in range(2018, 2025)]
+
+
+# ─────────────────────────── Internal loaders ───────────────────
+
+def _load_csv(filename: str, dataset_dir: Path = None) -> list[dict]:
+    """Load a NIBRS CSV file and return list of row dicts.
+
+    Normalises column names to UPPERCASE so that both old-format CSVs
+    (GA-2018/2019 with quoted "UPPERCASE" headers) and new-format CSVs
+    (GA-2022+ with lowercase headers) produce identical keys.
+    """
+    if dataset_dir is None:
+        dataset_dir = _DATASETS_BASE / "GA-2018"
+    filepath = dataset_dir / filename
+    if not filepath.exists():
+        logger.warning(f"NIBRS file not found: {filepath}")
+        return []
+    rows = []
+    with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            # Normalise all keys to UPPERCASE for cross-year compatibility.
+            # GA-2018/19 already use UPPERCASE; GA-2022+ use lowercase.
+            normalised = {k.upper(): v for k, v in row.items()}
+            rows.append(normalised)
+    return rows
+
+
+def _load_csv_all_years(filename: str) -> list[dict]:
+    """Load a NIBRS CSV file from ALL GA year directories and merge rows."""
+    all_rows = []
+    for year_dir_name in _GA_YEARS:
+        year_dir = _DATASETS_BASE / year_dir_name
+        if year_dir.exists():
+            rows = _load_csv(filename, year_dir)
+            if rows:
+                # Tag each row with its source year
+                year_str = year_dir_name.split("-")[1]
+                for row in rows:
+                    row["_source_year"] = year_str
+                all_rows.extend(rows)
+    return all_rows
+
+
+def _safe_int(val, default=0) -> int:
+    try:
+        return int(val)
+    except (ValueError, TypeError):
+        return default
+
+
+# ─────────────────────────── Offense Severity ───────────────────
+
+# Map CRIME_AGAINST → base severity weight
+_CRIME_AGAINST_WEIGHT = {
+    "Person": 8.0,
+    "Property": 3.0,
+    "Society": 2.0,
+    "Not a Crime": 0.5,
+}
+
+# Specific offense name overrides for more granular severity
+_OFFENSE_SEVERITY_OVERRIDES = {
+    "Murder and Nonnegligent Manslaughter": 10.0,
+    "Justifiable Homicide": 7.0,
+    "Kidnapping/Abduction": 9.0,
+    "Rape": 9.0,
+    "Sodomy": 9.0,
+    "Sexual Assault With An Object": 9.0,
+    "Aggravated Assault": 8.0,
+    "Simple Assault": 5.0,
+    "Intimidation": 4.0,
+    "Robbery": 7.0,
+    "Arson": 7.0,
+    "Extortion/Blackmail": 6.0,
+    "Burglary/Breaking & Entering": 5.0,
+    "Motor Vehicle Theft": 5.0,
+    "Counterfeiting/Forgery": 3.0,
+    "False Pretenses/Swindle/Confidence Game": 3.0,
+    "Credit Card/Automated Teller Machine Fraud": 3.0,
+    "Wire Fraud": 3.0,
+    "Embezzlement": 3.0,
+    "Stolen Property Offenses": 3.0,
+    "Destruction/Damage/Vandalism of Property": 3.0,
+    "Drug/Narcotic Violations": 2.0,
+    "Drug Equipment Violations": 1.5,
+    "Weapon Law Violations": 4.0,
+    "Pornography/Obscene Material": 2.0,
+    "Prostitution": 1.5,
+    "Gambling Violations": 1.0,
+    "Disorderly Conduct": 1.0,
+    "Trespass of Real Property": 2.0,
+    "Liquor Law Violations": 1.0,
+    "Drunkenness": 1.0,
+    "Curfew/Loitering/Vagrancy Violations": 0.5,
+}
+
+# FBI UCR Part I Index Crimes — NIBRS offense codes
+# These are the only offenses counted in FBI Uniform Crime Reports,
+# so using only these makes NIBRS rates comparable to FBI state rates.
+_PART_I_OFFENSE_CODES = {
+    # Violent crimes
+    "09A",  # Murder and Nonnegligent Manslaughter
+    "09B",  # Negligent Manslaughter
+    "11A",  # Rape
+    "11B",  # Sodomy
+    "11C",  # Sexual Assault With An Object
+    "11D",  # Fondling (included in forcible sex offenses)
+    "120",  # Robbery
+    "13A",  # Aggravated Assault
+    # Property crimes
+    "200",  # Arson
+    "220",  # Burglary/Breaking & Entering
+    "23A",  # Pocket-picking
+    "23B",  # Purse-snatching
+    "23C",  # Shoplifting
+    "23D",  # Theft From Building
+    "23E",  # Theft From Coin-Operated Machine
+    "23F",  # Theft From Motor Vehicle
+    "23G",  # Theft of Motor Vehicle Parts
+    "23H",  # All Other Larceny
+    "240",  # Motor Vehicle Theft
+}
+
+
+def _build_offense_type_lookup() -> tuple[dict, dict]:
+    """Build offense lookups from all GA years.
+
+    Returns two dicts:
+      - by_id:   numeric OFFENSE_TYPE_ID → info  (2018-2019 format)
+      - by_code: string OFFENSE_CODE → info      (2022+ format)
+
+    Both map to {name, crime_against, severity, category}.
+    """
+    rows = _load_csv_all_years("NIBRS_OFFENSE_TYPE.csv")
+    by_id: dict[int, dict] = {}
+    by_code: dict[str, dict] = {}
+
+    for row in rows:
+        name = row.get("OFFENSE_NAME", "Unknown").strip()
+        crime_against = row.get("CRIME_AGAINST", "").strip()
+        severity = _OFFENSE_SEVERITY_OVERRIDES.get(
+            name,
+            _CRIME_AGAINST_WEIGHT.get(crime_against, 2.0),
+        )
+        info = {
+            "name": name,
+            "crime_against": crime_against,
+            "severity": severity,
+            "category": row.get("OFFENSE_CATEGORY_NAME", "").strip(),
+            "offense_code": row.get("OFFENSE_CODE", "").strip(),
+        }
+
+        # 2018-2019 rows have a numeric OFFENSE_TYPE_ID
+        ot_id = row.get("OFFENSE_TYPE_ID", "")
+        if ot_id:
+            by_id[_safe_int(ot_id)] = info
+
+        # All rows have an OFFENSE_CODE string (e.g. "09A", "23H")
+        ot_code = row.get("OFFENSE_CODE", "").strip()
+        if ot_code:
+            by_code[ot_code] = info
+
+    return by_id, by_code
+
+
+def _build_location_type_lookup() -> dict:
+    """Build location_id → location_name lookup from all GA years."""
+    rows = _load_csv_all_years("NIBRS_LOCATION_TYPE.csv")
+    return {
+        _safe_int(row.get("LOCATION_ID")): row.get("LOCATION_NAME", "Unknown").strip()
+        for row in rows
+    }
+
+
+def _build_weapon_type_lookup() -> dict:
+    """Build weapon_id → weapon_name lookup from all GA years."""
+    rows = _load_csv_all_years("NIBRS_WEAPON_TYPE.csv")
+    return {
+        _safe_int(row.get("WEAPON_ID")): row.get("WEAPON_NAME", "Unknown").strip()
+        for row in rows
+    }
+
+
+# ──────────────────────── Pre-computed statistics ───────────────
+
+class NIBRSStatistics:
+    """Pre-computed crime statistics from NIBRS data."""
+
+    def __init__(self):
+        self.loaded = False
+        # Hourly distribution (24-element array, normalized to sum to 1)
+        self.hourly_distribution: np.ndarray = np.ones(24) / 24
+        # Offense severity lookup: offense_type_id → severity weight
+        self.offense_severity: dict[int, float] = {}
+        # Offense type lookup: offense_type_id → {name, crime_against, severity, category}
+        self.offense_types: dict[int, dict] = {}
+        # Location type risk: location_name → average severity
+        self.location_risk: dict[str, float] = {}
+        # Location type distribution: location_name → proportion of all offenses
+        self.location_distribution: dict[str, float] = {}
+        # Weapon involvement rate (fraction of offenses involving weapons)
+        self.weapon_rate: float = 0.0
+        # Weapon type distribution: weapon_name → count
+        self.weapon_distribution: dict[str, int] = {}
+        # Victim demographic rates: {sex: {"M": rate, "F": rate}, ...}
+        self.victim_gender_rates: dict[str, float] = {}
+        # Crime-against distribution: {"Person": frac, "Property": frac, "Society": frac}
+        self.crime_against_distribution: dict[str, float] = {}
+        # Severity-weighted hourly distribution
+        self.hourly_severity_distribution: np.ndarray = np.ones(24) / 24
+        # Stranger crime fraction
+        self.stranger_crime_rate: float = 0.3
+        # Agency-level statistics: agency_name (lower) → {population, incidents, rate, offense_counts}
+        self.agency_stats: dict[str, dict] = {}
+
+    def load(self):
+        """Load all NIBRS data from ALL GA year directories (2018-2024) and compute statistics."""
+        # Check if at least one year exists
+        available_years = []
+        for year_dir_name in _GA_YEARS:
+            year_dir = _DATASETS_BASE / year_dir_name
+            if year_dir.exists():
+                available_years.append(year_dir_name)
+
+        if not available_years:
+            logger.warning(f"No NIBRS dataset directories found under {_DATASETS_BASE}")
+            return
+
+        logger.info(f"Loading NIBRS data from {len(available_years)} GA year directories: {available_years}")
+
+        # 1. Load lookup tables (de-duplicated across years)
+        offense_by_id, offense_by_code = _build_offense_type_lookup()
+        # Expose a unified lookup for other consumers
+        self.offense_types = {**{str(k): v for k, v in offense_by_id.items()}, **offense_by_code}
+        location_lookup = _build_location_type_lookup()
+        weapon_lookup = _build_weapon_type_lookup()
+
+        # 1b. Load agency info for agency-level granularity
+        agency_info: dict[str, dict] = {}   # agency_id → {name, population, county, ...}
+        agency_rows = _load_csv_all_years("agencies.csv")
+        for row in agency_rows:
+            aid = row.get("AGENCY_ID", "")
+            if not aid:
+                continue
+            pop = _safe_int(row.get("POPULATION", 0))
+            name = row.get("PUB_AGENCY_NAME", "").strip()
+            # Keep the record with highest population (latest year)
+            if aid not in agency_info or pop > agency_info[aid].get("population", 0):
+                agency_info[aid] = {
+                    "name": name,
+                    "population": pop,
+                    "county": row.get("COUNTY_NAME", "").strip(),
+                    "type": row.get("AGENCY_TYPE_NAME", "").strip(),
+                    "suburban": row.get("SUBURBAN_AREA_FLAG", "").strip(),
+                }
+        logger.info(f"  Agency directory: {len(agency_info)} agencies")
+
+        # 2. Load incidents from ALL years (for hourly distribution + agency stats)
+        incidents = _load_csv_all_years("NIBRS_incident.csv")
+        hourly_counts = np.zeros(24)
+        incident_hours: dict[str, int] = {}  # "year:incident_id" → hour (keyed to avoid ID collisions)
+        incident_agency: dict[str, str] = {} # "year:incident_id" → agency_id
+        agency_incident_counts: dict[str, int] = defaultdict(int)
+
+        for inc in incidents:
+            hour = _safe_int(inc.get("INCIDENT_HOUR"), -1)
+            inc_id = inc.get("INCIDENT_ID", "")
+            aid = inc.get("AGENCY_ID", "")
+            year = inc.get("_source_year", "")
+            key = f"{year}:{inc_id}"
+            if 0 <= hour <= 23:
+                hourly_counts[hour] += 1
+                incident_hours[key] = hour
+            if aid:
+                incident_agency[key] = aid
+                agency_incident_counts[aid] += 1
+
+        total_incidents = hourly_counts.sum()
+        if total_incidents > 0:
+            self.hourly_distribution = hourly_counts / total_incidents
+        logger.info(f"  Loaded {len(incidents)} incidents across all years, {int(total_incidents)} with valid hours")
+
+        # 3. Load offenses from ALL years (for location risk, severity, crime-against)
+        offenses = _load_csv_all_years("NIBRS_OFFENSE.csv")
+        location_severities: dict[str, list[float]] = defaultdict(list)
+        location_counts: dict[str, int] = defaultdict(int)
+        crime_against_counts: dict[str, int] = defaultdict(int)
+        hourly_severity = np.zeros(24)
+        # Track Part I incidents per agency (for UCR-comparable rate)
+        agency_part1_incidents: dict[str, set] = defaultdict(set)  # aid → set of incident keys
+
+        for off in offenses:
+            # 2018-2019 rows have OFFENSE_TYPE_ID (numeric); 2022+ have OFFENSE_CODE (string)
+            ot_info = {}
+            ot_id_val = off.get("OFFENSE_TYPE_ID", "")
+            ot_code_val = off.get("OFFENSE_CODE", "").strip()
+            if ot_id_val:
+                ot_info = offense_by_id.get(_safe_int(ot_id_val), {})
+            if not ot_info and ot_code_val:
+                ot_info = offense_by_code.get(ot_code_val, {})
+
+            loc_id = _safe_int(off.get("LOCATION_ID"))
+            inc_id = off.get("INCIDENT_ID", "")
+            year = off.get("_source_year", "")
+            key = f"{year}:{inc_id}"
+            severity = ot_info.get("severity", 2.0)
+            crime_against = ot_info.get("crime_against", "")
+
+            # Location risk
+            loc_name = location_lookup.get(loc_id, "Unknown")
+            location_severities[loc_name].append(severity)
+            location_counts[loc_name] += 1
+
+            # Crime-against distribution
+            if crime_against:
+                crime_against_counts[crime_against] += 1
+
+            # Severity-weighted hourly distribution
+            hour = incident_hours.get(key, -1)
+            if 0 <= hour <= 23:
+                hourly_severity[hour] += severity
+
+            # Track Part I offenses per agency for UCR-comparable rate
+            # Resolve offense code: from CSV column or from offense_type lookup
+            resolved_code = ot_code_val
+            if not resolved_code and ot_info:
+                resolved_code = ot_info.get("offense_code", "")
+            if resolved_code in _PART_I_OFFENSE_CODES:
+                aid = incident_agency.get(key, "")
+                if aid:
+                    agency_part1_incidents[aid].add(key)
+
+        # Compute location risk averages
+        for loc_name, sevs in location_severities.items():
+            self.location_risk[loc_name] = float(np.mean(sevs))
+
+        total_offenses = sum(location_counts.values()) or 1
+        for loc_name, count in location_counts.items():
+            self.location_distribution[loc_name] = count / total_offenses
+
+        # Crime-against distribution
+        total_ca = sum(crime_against_counts.values()) or 1
+        for ca, count in crime_against_counts.items():
+            self.crime_against_distribution[ca] = count / total_ca
+
+        # Severity-weighted hourly distribution
+        total_sev = hourly_severity.sum()
+        if total_sev > 0:
+            self.hourly_severity_distribution = hourly_severity / total_sev
+
+        logger.info(f"  Loaded {len(offenses)} offenses across {len(location_counts)} location types (all years)")
+
+        # 4. Load weapons from ALL years
+        weapons = _load_csv_all_years("NIBRS_WEAPON.csv")
+        offense_ids_with_weapons = set()
+        for w in weapons:
+            wt_id = _safe_int(w.get("WEAPON_ID"))
+            off_id = _safe_int(w.get("OFFENSE_ID"))
+            year = w.get("_source_year", "")
+            wt_name = weapon_lookup.get(wt_id, "Unknown")
+            self.weapon_distribution[wt_name] = self.weapon_distribution.get(wt_name, 0) + 1
+            offense_ids_with_weapons.add(f"{year}:{off_id}")
+
+        self.weapon_rate = len(offense_ids_with_weapons) / max(len(offenses), 1)
+        logger.info(f"  Weapon involvement rate: {self.weapon_rate:.1%} (all years)")
+
+        # 5. Load victims from ALL years (for demographic risk)
+        victims = _load_csv_all_years("NIBRS_VICTIM.csv")
+        sex_counts: dict[str, int] = defaultdict(int)
+        total_victims = 0
+        for v in victims:
+            sex = v.get("SEX_CODE", "").strip()
+            if sex in ("M", "F"):
+                sex_counts[sex] += 1
+                total_victims += 1
+
+        if total_victims > 0:
+            for sex, count in sex_counts.items():
+                self.victim_gender_rates[sex] = count / total_victims
+        logger.info(f"  Victim demographics ({total_victims} total): {dict(self.victim_gender_rates)}")
+
+        # 6. Load relationships from ALL years (for stranger crime rate)
+        try:
+            relationships = _load_csv_all_years("NIBRS_VICTIM_OFFENDER_REL.csv")
+            rel_lookup_rows = _load_csv_all_years("NIBRS_RELATIONSHIP.csv")
+            rel_lookup = {
+                _safe_int(r.get("RELATIONSHIP_ID")): r.get("RELATIONSHIP_NAME", "").strip()
+                for r in rel_lookup_rows
+            }
+
+            stranger_count = 0
+            total_rels = 0
+            for rel in relationships:
+                rel_id = _safe_int(rel.get("RELATIONSHIP_ID"))
+                rel_name = rel_lookup.get(rel_id, "")
+                total_rels += 1
+                if "stranger" in rel_name.lower() or "unknown" in rel_name.lower():
+                    stranger_count += 1
+
+            if total_rels > 0:
+                self.stranger_crime_rate = stranger_count / total_rels
+            logger.info(f"  Stranger/unknown relationship rate: {self.stranger_crime_rate:.1%} (all years)")
+        except Exception as e:
+            logger.warning(f"  Could not load relationship data: {e}")
+
+        # Build offense severity lookup
+        for key, info in self.offense_types.items():
+            self.offense_severity[key] = info["severity"]
+
+        # 7. Build agency-level statistics (GA-specific precision)
+        # Average across available years (we have 2018, 2019, 2022, 2023, 2024)
+        n_years_with_data = len([y for y in available_years
+                                 if agency_incident_counts and
+                                    any(k.startswith(y.split("-")[1]) for k in
+                                        [f"{y.split('-')[1]}:" for _ in range(1)])])
+        # Count distinct years that actually have incident data
+        years_in_data = set()
+        for key in incident_agency:
+            yr = key.split(":")[0]
+            if yr:
+                years_in_data.add(yr)
+        n_years = max(len(years_in_data), 1)
+
+        for aid, info in agency_info.items():
+            total_inc = agency_incident_counts.get(aid, 0)
+            if total_inc == 0:
+                continue
+            pop = info.get("population", 0)
+            # Part I index crime count (UCR-comparable)
+            part1_count = len(agency_part1_incidents.get(aid, set()))
+            # Average annual Part I incidents
+            annual_part1 = part1_count / n_years
+            part1_rate = (annual_part1 / pop * 100_000) if pop > 0 else 0
+            # Also compute total rate for reference
+            annual_avg = total_inc / n_years
+            total_rate = (annual_avg / pop * 100_000) if pop > 0 else 0
+            name_key = info["name"].lower()
+            self.agency_stats[name_key] = {
+                "name": info["name"],
+                "agency_id": aid,
+                "population": pop,
+                "total_incidents": total_inc,
+                "part1_incidents": part1_count,
+                "annual_avg_incidents": round(annual_avg),
+                "annual_part1_incidents": round(annual_part1),
+                "rate_per_100k": round(part1_rate, 1),  # Part I rate (UCR-comparable)
+                "total_rate_per_100k": round(total_rate, 1),  # All-offense rate
+                "county": info.get("county", ""),
+                "type": info.get("type", ""),
+                "suburban": info.get("suburban", ""),
+            }
+
+        # Log top agencies by Part I rate
+        top_agencies = sorted(self.agency_stats.values(), key=lambda x: -x["part1_incidents"])[:10]
+        logger.info(f"  Agency-level stats computed for {len(self.agency_stats)} agencies (across {n_years} years)")
+        for a in top_agencies[:5]:
+            logger.info(
+                f"    {a['name']:30s} pop={a['population']:>8,} "
+                f"Part I rate={a['rate_per_100k']:>7.0f}/100k  "
+                f"total rate={a['total_rate_per_100k']:>7.0f}/100k"
+            )
+
+        self.loaded = True
+        logger.info("NIBRS data pipeline loaded successfully")
+
+    def get_agency_crime_rate(self, city_name: str) -> Optional[dict]:
+        """Look up agency-level crime rate for a GA city.
+
+        Tries exact match on city name then fuzzy substring match.
+        Returns dict with 'rate_per_100k', 'population', etc. or None.
+        """
+        if not self.agency_stats:
+            return None
+
+        city_lower = city_name.split(",")[0].strip().lower() if city_name else ""
+        if not city_lower:
+            return None
+
+        # Exact match
+        if city_lower in self.agency_stats:
+            return self.agency_stats[city_lower]
+
+        # Substring match (e.g. "Alpharetta, GA" → "alpharetta")
+        for key, stats in self.agency_stats.items():
+            if city_lower in key or key in city_lower:
+                return stats
+
+        return None
+
+    def get_hourly_risk_curve(self, base_risk: float) -> np.ndarray:
+        """
+        Convert raw hourly distribution into a risk curve scaled by base_risk.
+        Returns 24-element array with risk values (0-100 scale).
+        """
+        if not self.loaded:
+            return self._synthetic_fallback()
+
+        # Use severity-weighted distribution for more accurate risk
+        dist = self.hourly_severity_distribution.copy()
+
+        # Normalize to have max = 1
+        max_val = dist.max() if dist.max() > 0 else 1
+        normalized = dist / max_val
+
+        # Apply smoothing kernel
+        kernel = np.array([0.1, 0.2, 0.4, 0.2, 0.1])
+        smoothed = np.convolve(normalized, kernel, mode="same")
+        smoothed = smoothed / smoothed.max() if smoothed.max() > 0 else smoothed
+
+        # Scale by danger level (inverse of base safety)
+        danger = (100 - base_risk) / 100
+        risk_curve = smoothed * danger * 85 + 5  # scale to ~5-90 range
+        return np.clip(risk_curve, 5, 95)
+
+    @staticmethod
+    def _synthetic_fallback() -> np.ndarray:
+        """Fallback if NIBRS data isn't loaded — matches general crime patterns."""
+        hours = np.arange(24)
+        # Based on BJS studies: crime peaks 6pm-midnight, lowest 5am-noon
+        night_peak = np.exp(-0.5 * ((hours - 22) / 3) ** 2) * 0.7
+        afternoon = np.exp(-0.5 * ((hours - 15) / 4) ** 2) * 0.3
+        morning_low = np.exp(-0.5 * ((hours - 6) / 3) ** 2) * 0.2
+        base = night_peak + afternoon - morning_low + 0.3
+        base = np.clip(base, 0.1, 1.0)
+        return base / base.max() * 70 + 10  # scale to 10-80 range
+
+    def get_gender_risk_factor(self, gender: str) -> float:
+        """
+        Data-driven gender risk adjustment based on NIBRS victim demographics.
+        Returns a risk penalty (0.0 to 0.15).
+        """
+        if not self.loaded or not self.victim_gender_rates:
+            # Minimal fallback
+            return {"female": 0.06, "male": 0.0, "mixed": 0.03}.get(gender, 0.03)
+
+        female_rate = self.victim_gender_rates.get("F", 0.5)
+        male_rate = self.victim_gender_rates.get("M", 0.5)
+
+        # Compute relative risk compared to population average
+        # (NIBRS GA-2018 will show actual victim gender proportions)
+        baseline = 0.5  # assume roughly equal population
+        if gender == "female":
+            return min(0.15, max(0.0, (female_rate - baseline) * 0.3))
+        elif gender == "male":
+            return min(0.10, max(0.0, (male_rate - baseline) * 0.3))
+        elif gender == "mixed":
+            return 0.03
+        return 0.03
+
+    def get_location_type_risk(self, location_type: str) -> float:
+        """Get risk multiplier for a specific location type."""
+        if not self.loaded:
+            return 1.0
+        avg_severity = self.location_risk.get(location_type)
+        if avg_severity is None:
+            # Default to overall average
+            all_sevs = list(self.location_risk.values())
+            avg_severity = float(np.mean(all_sevs)) if all_sevs else 3.0
+        # Normalize relative to average
+        all_sevs = list(self.location_risk.values())
+        overall_avg = float(np.mean(all_sevs)) if all_sevs else 3.0
+        return avg_severity / overall_avg if overall_avg > 0 else 1.0
+
+
+# ─────────────────────────── Singleton ──────────────────────────
+
+nibrs_stats = NIBRSStatistics()
+
+
+def initialize_nibrs():
+    """Load NIBRS data. Call once at startup."""
+    try:
+        nibrs_stats.load()
+    except Exception as e:
+        logger.error(f"Failed to load NIBRS data: {e}")
+
+
+# ═══════════════════════════════════════════════════════════════
+# FBI-derived State Crime Profiles (non-GA states)
+# ═══════════════════════════════════════════════════════════════
+#
+# BJS-derived hourly crime patterns by offense category.
+# Source: Bureau of Justice Statistics, National Crime Victimization
+# Survey (NCVS), and published NIBRS annual reports.
+# Each array is a 24-element relative density (auto-normalized).
+# ═══════════════════════════════════════════════════════════════
+
+# Violent crime: peaks ~9pm-1am, lowest ~5am-8am
+_BJS_VIOLENT = np.array([
+    5.5, 4.8, 3.8, 2.8, 2.2, 1.8, 1.5, 1.8,
+    2.2, 2.5, 2.8, 3.2, 3.8, 4.2, 4.5, 5.0,
+    5.5, 6.0, 6.5, 6.8, 7.2, 7.0, 6.5, 6.0,
+], dtype=np.float64)
+
+# Property crime: more uniform, slight peak ~12pm–6pm
+_BJS_PROPERTY = np.array([
+    3.5, 3.0, 2.5, 2.0, 1.8, 2.0, 2.5, 3.0,
+    3.8, 4.2, 4.8, 5.2, 5.5, 5.8, 5.5, 5.2,
+    5.0, 4.8, 4.8, 4.8, 4.8, 4.5, 4.2, 3.8,
+], dtype=np.float64)
+
+# Robbery: peaks ~9pm–midnight
+_BJS_ROBBERY = np.array([
+    5.5, 4.8, 3.8, 2.8, 2.0, 1.5, 1.2, 1.5,
+    2.0, 2.5, 2.8, 3.2, 3.5, 3.8, 4.2, 4.8,
+    5.2, 5.5, 6.0, 6.5, 7.0, 7.2, 6.8, 6.0,
+], dtype=np.float64)
+
+# Burglary: peaks ~10am–2pm (when residents are away)
+_BJS_BURGLARY = np.array([
+    3.2, 2.8, 2.2, 1.8, 1.5, 1.8, 2.5, 3.5,
+    4.8, 5.8, 6.5, 6.8, 6.5, 6.0, 5.5, 5.0,
+    4.8, 4.5, 4.2, 4.2, 4.2, 4.0, 3.8, 3.5,
+], dtype=np.float64)
+
+# Aggravated assault: peaks ~6pm–midnight
+_BJS_ASSAULT = np.array([
+    5.5, 5.0, 4.0, 3.0, 2.2, 1.8, 1.5, 1.8,
+    2.2, 2.5, 2.8, 3.2, 3.5, 4.0, 4.5, 5.0,
+    5.5, 5.8, 6.5, 6.8, 7.2, 7.0, 6.5, 5.8,
+], dtype=np.float64)
+
+# Larceny/Theft: peaks ~12pm–6pm (retail/shopping hours)
+_BJS_LARCENY = np.array([
+    2.8, 2.2, 1.8, 1.5, 1.2, 1.5, 2.2, 3.2,
+    4.2, 5.0, 5.5, 6.0, 6.2, 5.8, 5.5, 5.5,
+    5.5, 5.2, 5.0, 4.8, 4.5, 4.2, 3.8, 3.2,
+], dtype=np.float64)
+
+# Motor vehicle theft: peaks ~6pm–midnight
+_BJS_VEHICLE_THEFT = np.array([
+    5.0, 4.5, 3.8, 3.0, 2.2, 2.0, 2.0, 2.5,
+    3.0, 3.5, 3.8, 4.0, 4.2, 4.2, 4.5, 4.8,
+    5.0, 5.5, 6.0, 6.5, 6.5, 6.2, 5.8, 5.5,
+], dtype=np.float64)
+
+# Homicide: peaks ~10pm–2am
+_BJS_HOMICIDE = np.array([
+    6.5, 5.8, 4.5, 3.5, 2.5, 2.0, 1.5, 1.5,
+    1.8, 2.0, 2.2, 2.5, 3.0, 3.5, 4.0, 4.5,
+    5.0, 5.5, 6.0, 6.5, 7.0, 7.5, 7.5, 7.0,
+], dtype=np.float64)
+
+# Normalize all BJS patterns to probability densities
+for _p in [_BJS_VIOLENT, _BJS_PROPERTY, _BJS_ROBBERY, _BJS_BURGLARY,
+           _BJS_ASSAULT, _BJS_LARCENY, _BJS_VEHICLE_THEFT, _BJS_HOMICIDE]:
+    _p /= _p.sum()
+
+# Offense severity weights for BJS patterns (same scale as _CRIME_AGAINST_WEIGHT)
+_BJS_SEVERITY = {
+    "homicide": 10.0,
+    "robbery": 7.0,
+    "aggravated_assault": 8.0,
+    "violent_crime": 7.0,   # generic violent fallback
+    "burglary": 5.0,
+    "larceny": 3.0,
+    "motor_vehicle_theft": 5.0,
+    "property_crime": 3.0,  # generic property fallback
+}
+
+# ── National NIBRS weapon involvement rates by offense type ──
+# Source: FBI NIBRS 2022 annual report, Table 15
+_NATIONAL_WEAPON_RATES: dict[str, float] = {
+    "homicide": 0.90,
+    "aggravated_assault": 0.67,
+    "robbery": 0.42,
+    "violent_crime": 0.35,
+    "burglary": 0.02,
+    "larceny": 0.01,
+    "motor_vehicle_theft": 0.01,
+    "property_crime": 0.01,
+}
+
+# ── National NIBRS victim sex proportions by offense category ──
+# Source: FBI NIBRS 2022, Table 11 — Victims by sex
+_NATIONAL_VICTIM_SEX: dict[str, dict[str, float]] = {
+    "homicide":            {"M": 0.78, "F": 0.22},
+    "aggravated_assault":  {"M": 0.62, "F": 0.38},
+    "robbery":             {"M": 0.64, "F": 0.36},
+    "violent_crime":       {"M": 0.56, "F": 0.44},
+    "burglary":            {"M": 0.50, "F": 0.50},
+    "larceny":             {"M": 0.48, "F": 0.52},
+    "motor_vehicle_theft": {"M": 0.54, "F": 0.46},
+    "property_crime":      {"M": 0.50, "F": 0.50},
+}
+
+
+def derive_state_profile(fbi_data: dict, nibrs_detail: Optional[dict] = None) -> Optional[dict]:
+    """Derive NIBRS-equivalent crime profile from FBI CDE aggregate data.
+
+    Uses the state's offense-type distribution to weight BJS hourly patterns,
+    national weapon rates, and victim demographics — producing a state-specific
+    profile that replaces synthetic fallbacks.
+
+    When 'nibrs_detail' is provided (from FBI SAPI), actual per-state victim sex
+    and weapon rates override the national-average estimates.
+
+    Args:
+        fbi_data: dict from fetch_fbi_crime_data() with keys like
+                  violent_crime, property_crime, robbery, etc.
+        nibrs_detail: optional dict with 'victim_sex' and 'weapon_rate' from
+                      FBI SAPI NIBRS endpoints.
+
+    Returns:
+        dict with keys matching NIBRSStatistics attributes, or None if
+        fbi_data is empty/unusable.
+    """
+    if not fbi_data or fbi_data.get("record_count", 0) == 0:
+        return None
+
+    # ── 1. Extract offense counts ──
+    counts = {
+        "homicide": max(fbi_data.get("homicide", 0), 0),
+        "robbery": max(fbi_data.get("robbery", 0), 0),
+        "aggravated_assault": max(fbi_data.get("aggravated_assault", 0), 0),
+        "burglary": max(fbi_data.get("burglary", 0), 0),
+        "larceny": max(fbi_data.get("larceny", 0), 0),
+        "motor_vehicle_theft": max(fbi_data.get("motor_vehicle_theft", 0), 0),
+    }
+    total = sum(counts.values())
+    if total == 0:
+        return None
+
+    # Proportions
+    fracs = {k: v / total for k, v in counts.items()}
+
+    # ── 2. Weighted hourly distribution ──
+    pattern_map = {
+        "homicide": _BJS_HOMICIDE,
+        "robbery": _BJS_ROBBERY,
+        "aggravated_assault": _BJS_ASSAULT,
+        "burglary": _BJS_BURGLARY,
+        "larceny": _BJS_LARCENY,
+        "motor_vehicle_theft": _BJS_VEHICLE_THEFT,
+    }
+    hourly = np.zeros(24, dtype=np.float64)
+    for offense, frac in fracs.items():
+        hourly += frac * pattern_map.get(offense, _BJS_PROPERTY)
+    hourly /= hourly.sum()
+
+    # ── 3. Severity-weighted hourly distribution ──
+    hourly_sev = np.zeros(24, dtype=np.float64)
+    for offense, frac in fracs.items():
+        sev = _BJS_SEVERITY.get(offense, 3.0)
+        pattern = pattern_map.get(offense, _BJS_PROPERTY)
+        hourly_sev += frac * sev * pattern
+    sev_total = hourly_sev.sum()
+    if sev_total > 0:
+        hourly_sev /= sev_total
+
+    # ── 4. Weapon rate ──
+    # Prefer actual state data from FBI SAPI if available
+    if nibrs_detail and nibrs_detail.get("weapon_rate", -1) >= 0:
+        weapon_rate = nibrs_detail["weapon_rate"]
+    else:
+        # Weighted national average
+        weapon_rate = sum(
+            fracs[k] * _NATIONAL_WEAPON_RATES.get(k, 0.01)
+            for k in fracs
+        )
+
+    # ── 5. Victim gender rates ──
+    # Prefer actual state data from FBI SAPI if available
+    if nibrs_detail and nibrs_detail.get("victim_sex"):
+        male_rate = nibrs_detail["victim_sex"].get("M", 0.5)
+        female_rate = nibrs_detail["victim_sex"].get("F", 0.5)
+    else:
+        # Weighted national average
+        male_rate = sum(
+            fracs[k] * _NATIONAL_VICTIM_SEX.get(k, {"M": 0.5})["M"]
+            for k in fracs
+        )
+        female_rate = sum(
+            fracs[k] * _NATIONAL_VICTIM_SEX.get(k, {"F": 0.5})["F"]
+            for k in fracs
+        )
+    # Normalize
+    gender_total = male_rate + female_rate
+    if gender_total > 0:
+        male_rate /= gender_total
+        female_rate /= gender_total
+
+    # ── 6. Crime-against distribution ──
+    violent_total = counts["homicide"] + counts["robbery"] + counts["aggravated_assault"]
+    property_total = counts["burglary"] + counts["larceny"] + counts["motor_vehicle_theft"]
+    crime_against = {}
+    if total > 0:
+        crime_against["Person"] = violent_total / total
+        crime_against["Property"] = property_total / total
+        # Society crimes aren't broken out by FBI CDE; estimate ~5%
+        crime_against["Society"] = 0.05
+        # Re-normalize
+        ca_total = sum(crime_against.values())
+        crime_against = {k: v / ca_total for k, v in crime_against.items()}
+
+    # ── 7. Stranger crime rate (national average by crime mix) ──
+    # BJS: ~38% of violent crimes by strangers, ~55% of robberies
+    stranger_rates = {
+        "homicide": 0.22,
+        "robbery": 0.55,
+        "aggravated_assault": 0.38,
+        "burglary": 0.65,
+        "larceny": 0.85,
+        "motor_vehicle_theft": 0.95,
+    }
+    stranger_rate = sum(fracs[k] * stranger_rates.get(k, 0.5) for k in fracs)
+
+    profile = {
+        "hourly_distribution": hourly,
+        "hourly_severity_distribution": hourly_sev,
+        "weapon_rate": float(weapon_rate),
+        "victim_gender_rates": {"M": float(male_rate), "F": float(female_rate)},
+        "crime_against_distribution": crime_against,
+        "stranger_crime_rate": float(stranger_rate),
+        "offense_fractions": fracs,
+        "source": "FBI CDE + BJS",
+    }
+
+    logger.info(
+        f"Derived state profile: weapon_rate={weapon_rate:.2%}, "
+        f"M/F={male_rate:.2f}/{female_rate:.2f}, "
+        f"stranger={stranger_rate:.2%}"
+    )
+    return profile
+
+
+def get_state_crime_profile(
+    state_abbr: str,
+    fbi_data: dict,
+    nibrs_detail: Optional[dict] = None,
+) -> Optional[dict]:
+    """Get a complete crime profile for any US state.
+
+    For Georgia: extracts from the loaded NIBRS GA-2018 dataset.
+    For all other states: derives from FBI CDE API data + BJS research,
+    optionally enhanced with FBI SAPI NIBRS detail.
+
+    Args:
+        state_abbr: Two-letter state abbreviation.
+        fbi_data: FBI CDE data dict (from fetch_fbi_crime_data).
+        nibrs_detail: Optional dict with victim_sex + weapon_rate from FBI SAPI.
+
+    Returns:
+        dict with hourly_distribution, weapon_rate, victim_gender_rates, etc.
+        None if no data available.
+    """
+    # Georgia: use loaded NIBRS data
+    if state_abbr.upper() == "GA" and nibrs_stats.loaded:
+        return {
+            "hourly_distribution": nibrs_stats.hourly_distribution,
+            "hourly_severity_distribution": nibrs_stats.hourly_severity_distribution,
+            "weapon_rate": nibrs_stats.weapon_rate,
+            "victim_gender_rates": nibrs_stats.victim_gender_rates,
+            "crime_against_distribution": nibrs_stats.crime_against_distribution,
+            "stranger_crime_rate": nibrs_stats.stranger_crime_rate,
+            "source": "NIBRS GA-2018 (local)",
+        }
+
+    # All other states: derive from FBI CDE data
+    return derive_state_profile(fbi_data, nibrs_detail)

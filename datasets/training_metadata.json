@@ -1,0 +1,102 @@
+{
+  "n_samples": 1470800,
+  "n_train": 1176640,
+  "n_val": 147080,
+  "n_test": 147080,
+  "n_features": 25,
+  "feature_names": [
+    "agency_part1_rate",
+    "agency_violent_rate",
+    "agency_property_rate",
+    "agency_weapon_rate",
+    "agency_stranger_rate",
+    "agency_severity_score",
+    "state_crime_rate_norm",
+    "population_group",
+    "hourly_risk_ratio",
+    "dow_risk_ratio",
+    "monthly_risk_ratio",
+    "time_sin",
+    "time_cos",
+    "is_weekend",
+    "people_count_norm",
+    "gender_factor",
+    "weather_severity",
+    "officer_density",
+    "is_college",
+    "is_urban",
+    "poi_density",
+    "live_events_norm",
+    "live_incidents_norm",
+    "moon_illumination",
+    "spatial_density_score"
+  ],
+  "mae": 0.0035049347206950188,
+  "rmse": 0.004991224501281977,
+  "accuracy_at_10": 1.0,
+  "best_iteration": 499,
+  "label_mean": 0.8319215774536133,
+  "label_std": 0.14368802309036255,
+  "top_features": [
+    {
+      "name": "spatial_density_score",
+      "gain": 14.740299224853516
+    },
+    {
+      "name": "agency_part1_rate",
+      "gain": 5.69678258895874
+    },
+    {
+      "name": "hourly_risk_ratio",
+      "gain": 1.6249809265136719
+    },
+    {
+      "name": "agency_property_rate",
+      "gain": 1.0974209308624268
+    },
+    {
+      "name": "people_count_norm",
+      "gain": 0.9152602553367615
+    },
+    {
+      "name": "gender_factor",
+      "gain": 0.5992680788040161
+    },
+    {
+      "name": "time_sin",
+      "gain": 0.42628607153892517
+    },
+    {
+      "name": "time_cos",
+      "gain": 0.31787362694740295
+    },
+    {
+      "name": "weather_severity",
+      "gain": 0.2986811399459839
+    },
+    {
+      "name": "dow_risk_ratio",
+      "gain": 0.2639482617378235
+    },
+    {
+      "name": "population_group",
+      "gain": 0.14589722454547882
+    },
+    {
+      "name": "is_college",
+      "gain": 0.11582578718662262
+    },
+    {
+      "name": "officer_density",
+      "gain": 0.11035046726465225
+    },
+    {
+      "name": "agency_violent_rate",
+      "gain": 0.09142591804265976
+    },
+    {
+      "name": "agency_weapon_rate",
+      "gain": 0.06587166339159012
+    }
+  ]
+}
