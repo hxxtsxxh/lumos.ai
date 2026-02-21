@@ -3,6 +3,9 @@ import {
   Shield, Info, AlertTriangle, Clock,
   Sun, Cloud, CloudRain, CloudDrizzle, CloudSnow,
   CloudLightning, CloudFog, Wind, Tornado, Thermometer,
+  Car, Package, Flame, Home, Hammer, Wine,
+  Skull, Crosshair, Ban, UserX, ShieldAlert,
+  FileWarning, Banknote, Pill, AlertCircle, Bike,
 } from 'lucide-react';
 import type { SafetyData, WeatherInfo } from '@/types/safety';
 import { useState } from 'react';
@@ -29,6 +32,36 @@ const weatherIcons: Record<string, { Icon: LucideIcon; color: string }> = {
 };
 
 const fallbackWeatherIcon = { Icon: Thermometer, color: 'text-muted-foreground' };
+
+interface IncidentStyle { Icon: LucideIcon; color: string; bg: string }
+
+const incidentKeywords: Array<{ keywords: string[]; style: IncidentStyle }> = [
+  { keywords: ['vehicle', 'auto theft', 'car theft', 'motor', 'carjack'],       style: { Icon: Car,         color: 'text-lumos-caution', bg: 'bg-amber-500/20' } },
+  { keywords: ['theft', 'larceny', 'shoplift', 'stolen', 'pickpocket'],         style: { Icon: Package,     color: 'text-lumos-caution', bg: 'bg-amber-500/20' } },
+  { keywords: ['burglary', 'break-in', 'breaking'],                             style: { Icon: Home,        color: 'text-amber-600',     bg: 'bg-amber-500/15' } },
+  { keywords: ['robbery', 'armed robbery', 'mugging'],                          style: { Icon: Banknote,    color: 'text-lumos-danger',  bg: 'bg-red-500/20' } },
+  { keywords: ['assault', 'battery', 'attack', 'fight'],                        style: { Icon: UserX,       color: 'text-lumos-danger',  bg: 'bg-red-500/20' } },
+  { keywords: ['homicide', 'murder', 'manslaughter', 'killing'],                style: { Icon: Skull,       color: 'text-lumos-danger',  bg: 'bg-red-500/20' } },
+  { keywords: ['sexual', 'rape', 'indecen'],                                    style: { Icon: ShieldAlert, color: 'text-lumos-danger',  bg: 'bg-red-500/20' } },
+  { keywords: ['weapon', 'gun', 'firearm', 'shoot', 'stab', 'knife'],           style: { Icon: Crosshair,   color: 'text-lumos-danger',  bg: 'bg-red-500/20' } },
+  { keywords: ['vandal', 'damage', 'graffiti', 'mischief', 'destruction'],      style: { Icon: Hammer,      color: 'text-primary',       bg: 'bg-primary/20' } },
+  { keywords: ['drug', 'narcotic', 'substance', 'controlled'],                  style: { Icon: Pill,        color: 'text-primary',       bg: 'bg-primary/20' } },
+  { keywords: ['fraud', 'forg', 'embezzle', 'identity', 'scam', 'counterfeit'], style: { Icon: FileWarning, color: 'text-lumos-caution', bg: 'bg-amber-500/20' } },
+  { keywords: ['arson', 'fire'],                                                style: { Icon: Flame,       color: 'text-orange-500',    bg: 'bg-orange-500/20' } },
+  { keywords: ['dui', 'dwi', 'drunk', 'impaired', 'alcohol'],                   style: { Icon: Wine,        color: 'text-primary',       bg: 'bg-primary/20' } },
+  { keywords: ['trespass', 'prowl', 'loiter'],                                  style: { Icon: Ban,         color: 'text-lumos-caution', bg: 'bg-amber-500/20' } },
+  { keywords: ['bicycle', 'bike'],                                              style: { Icon: Bike,        color: 'text-lumos-teal',    bg: 'bg-lumos-teal/20' } },
+];
+
+const defaultIncidentStyle: IncidentStyle = { Icon: AlertCircle, color: 'text-primary', bg: 'bg-primary/20' };
+
+function getIncidentStyle(type: string): IncidentStyle {
+  const lower = type.toLowerCase();
+  for (const entry of incidentKeywords) {
+    if (entry.keywords.some((kw) => lower.includes(kw))) return entry.style;
+  }
+  return defaultIncidentStyle;
+}
 
 const celsiusToF = (c: number) => Math.round(c * 9 / 5 + 32);
 
@@ -149,7 +182,7 @@ const SafetyDashboard = ({ data, locationName }: SafetyDashboardProps) => {
         <div>
           <div className="flex items-center justify-between mb-1.5">
             <div className="flex items-center gap-1.5">
-              <AlertTriangle className="w-3.5 h-3.5 text-muted-foreground" />
+              <AlertTriangle className="w-3.5 h-3.5 text-primary" />
               <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Common Incidents</span>
             </div>
             {data.incidentTypes.length > 3 && (
@@ -162,23 +195,31 @@ const SafetyDashboard = ({ data, locationName }: SafetyDashboardProps) => {
             )}
           </div>
           <div className="space-y-1.5">
-            {visibleIncidents.map((incident) => (
-              <div key={incident.type} className="flex items-center gap-2.5">
-                <span className="text-sm w-5 text-center shrink-0">{incident.icon}</span>
-                <span className="text-xs text-foreground truncate flex-1">{incident.type}</span>
-                <span className="text-[11px] text-muted-foreground tabular-nums w-8 text-right shrink-0">
-                  {Math.round(incident.probability * 100)}%
-                </span>
-                <div className="w-16 h-1.5 bg-secondary rounded-full overflow-hidden shrink-0">
-                  <motion.div
-                    initial={{ width: 0 }}
-                    animate={{ width: `${incident.probability * 100}%` }}
-                    transition={{ duration: 0.8, delay: 0.5 }}
-                    className="h-full rounded-full bg-primary/70"
-                  />
+            {visibleIncidents.map((incident) => {
+              const style = getIncidentStyle(incident.type);
+              const IncIcon = style.Icon;
+              return (
+                <div key={incident.type} className="flex items-center gap-2.5">
+                  <div className="w-7 h-7 rounded-lg bg-primary/15 flex items-center justify-center shrink-0">
+                    <IncIcon className="w-3.5 h-3.5 text-primary" />
+                  </div>
+                  <span className="text-xs text-foreground truncate flex-1">
+                    {incident.type}
+                  </span>
+                  <span className="text-[11px] text-muted-foreground tabular-nums w-8 text-right shrink-0">
+                    {Math.round(incident.probability * 100)}%
+                  </span>
+                  <div className="w-16 h-1.5 bg-secondary rounded-full overflow-hidden shrink-0">
+                    <motion.div
+                      initial={{ width: 0 }}
+                      animate={{ width: `${incident.probability * 100}%` }}
+                      transition={{ duration: 0.8, delay: 0.5 }}
+                      className="h-full rounded-full bg-primary/70"
+                    />
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       </div>
