@@ -11,7 +11,7 @@ load_dotenv(_env_path)
 # ── API Keys ──
 GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY", "")
 DATA_GOV_API_KEY = os.environ.get("DATA_GOV_API_KEY", "DEMO_KEY")
-GEMINI_API_KEY = os.environ.get("VITE_GEMINI_API_KEY", "")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "") or os.environ.get("VITE_GEMINI_API_KEY", "")
 
 # ── Socrata Open Data Network Keys ──
 SOCRATA_APP_TOKEN = os.environ.get("SOCRATA_APP_TOKEN", "")
