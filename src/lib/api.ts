@@ -81,6 +81,22 @@ export async function geocodeLocation(
   return null;
 }
 
+// ─── Reverse geocode (lat/lng → address string) ───
+export async function reverseGeocode(lat: number, lng: number): Promise<string | null> {
+  try {
+    const res = await fetch(
+      `https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&key=${GOOGLE_MAPS_API_KEY}`
+    );
+    const data = await res.json();
+    if (data.status === 'OK' && data.results?.length) {
+      return data.results[0].formatted_address;
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
 // ─── Citizen live incidents ───
 export async function fetchCitizenHotspots(bounds: {
   lowerLatitude: number;
@@ -231,6 +247,9 @@ export interface EmergencyCallPayload {
   incidentType: string;
   severity: string;
   userNotes?: string;
+  medicalConditions?: string;
+  emergencyContactName?: string;
+  emergencyContactPhone?: string;
   movementDirection?: string;
   movementSpeed?: string;
 }

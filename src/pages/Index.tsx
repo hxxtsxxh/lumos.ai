@@ -16,16 +16,17 @@ import NearbyPOIs from '@/components/NearbyPOIs';
 import HistoricalTrends from '@/components/HistoricalTrends';
 import ReportIncident from '@/components/ReportIncident';
 import ExportReport from '@/components/ExportReport';
-import ThemeToggle from '@/components/ThemeToggle';
 import RouteSafetyPanel from '@/components/RouteSafetyPanel';
 import HeatmapLegend from '@/components/HeatmapLegend';
 import WalkWithMe from '@/components/WalkWithMe';
 
 import SafetyChatWidget from '@/components/SafetyChatWidget';
 
-import { EmergencyCallModal } from '@/components/EmergencyCallModal';
+import ActiveCallBar from '@/components/ActiveCallBar';
+import EmergencyProfileModal from '@/components/EmergencyProfileModal';
+import { useEmergencyProfile } from '@/hooks/useEmergencyProfile';
 
-import { geocodeLocation, fetchSafetyScore, fetchRouteAnalysis, fetchCitizenHotspots, type FullSafetyResponse, type HeatmapPoint } from '@/lib/api';
+import { geocodeLocation, fetchSafetyScore, fetchRouteAnalysis, fetchCitizenHotspots, startEmergencyCall, type FullSafetyResponse, type HeatmapPoint } from '@/lib/api';
 import { useTheme } from '@/hooks/useTheme';
 import {
   addCrimeHeatmap,
@@ -51,7 +52,7 @@ import {
 import { saveReport, type SavedReport } from '@/lib/savedReports';
 import { useAuth } from '@/hooks/useAuth';
 import { toast } from 'sonner';
-import { Bookmark, Layers, LocateFixed, Radio, RefreshCw, CircleDot, Sparkles, MapPin, BarChart3, Phone, AlertCircle, ChevronUp, ChevronDown, Map } from 'lucide-react';
+import { Bookmark, Layers, LocateFixed, Radio, RefreshCw, CircleDot, Sparkles, MapPin, BarChart3, Phone, AlertCircle, ChevronUp, ChevronDown, Map, Heart } from 'lucide-react';
 import type { TravelParams, RouteAnalysisData } from '@/types/safety';
 
 type ActivePanel = 'tips' | 'pois' | 'trends' | 'emergency' | 'report' | null;
@@ -72,7 +73,6 @@ function formatIncidentDate(dateStr: string): string {
 const Index = () => {
   const { user } = useAuth();
   const theme = useTheme();
-  const isLight = theme === 'light';
   const [appState, setAppState] = useState<AppState>('landing');
   const [safetyData, setSafetyData] = useState<FullSafetyResponse | null>(null);
   const [locationName, setLocationName] = useState('');
@@ -107,8 +107,85 @@ const Index = () => {
   // Mobile bottom sheet state: collapsed shows peek bar, expanded shows full panels
   const [mobilePanelOpen, setMobilePanelOpen] = useState(false);
 
-  // Emergency call (VAPI) modal
-  const [emergencyCallModalOpen, setEmergencyCallModalOpen] = useState(false);
+  // Emergency profile & active call state
+  const { profile: emergencyProfile, setProfile: setEmergencyProfile, isProfileComplete } = useEmergencyProfile();
+  const [emergencyProfileOpen, setEmergencyProfileOpen] = useState(false);
+  const [activeCallId, setActiveCallId] = useState<string | null>(null);
+  const [callElapsed, setCallElapsed] = useState(0);
+  const isStartingCallRef = useRef(false);
+
+  // Elapsed timer for active emergency call
+  useEffect(() => {
+    if (!activeCallId) return;
+    const interval = setInterval(() => setCallElapsed((e) => e + 1), 1000);
+    return () => clearInterval(interval);
+  }, [activeCallId]);
+
+  // One-tap 911 handler — reads emergency profile, grabs GPS, starts VAPI call
+  const handleCall911 = useCallback(async () => {
+    if (isStartingCallRef.current || activeCallId) return;
+
+    if (!isProfileComplete) {
+      toast.error('Please set your Emergency Info first', {
+        action: { label: 'Set now', onClick: () => setEmergencyProfileOpen(true) },
+      });
+      return;
+    }
+
+    isStartingCallRef.current = true;
+
+    // Get current GPS (best effort — fall back to searched location)
+    let lat = locationCoords?.lat ?? 0;
+    let lng = locationCoords?.lng ?? 0;
+    try {
+      const pos = await new Promise<GeolocationPosition>((resolve, reject) =>
+        navigator.geolocation.getCurrentPosition(resolve, reject, {
+          enableHighAccuracy: true,
+          timeout: 5000,
+          maximumAge: 10000,
+        })
+      );
+      lat = pos.coords.latitude;
+      lng = pos.coords.longitude;
+    } catch {
+      // Use searched location as fallback
+    }
+
+    toast.info('Starting emergency call...', { duration: 2000 });
+
+    // Haptic feedback
+    if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
+
+    try {
+      const res = await startEmergencyCall({
+        callerName: emergencyProfile.name,
+        callerAge: emergencyProfile.age || undefined,
+        lat,
+        lng,
+        address: locationName || undefined,
+        safetyScore: safetyData?.safetyIndex ?? 0,
+        incidentType: emergencyProfile.defaultIncidentType,
+        severity: emergencyProfile.defaultSeverity,
+        userNotes: emergencyProfile.medicalConditions
+          ? `Medical: ${emergencyProfile.medicalConditions}`
+          : undefined,
+        medicalConditions: emergencyProfile.medicalConditions || undefined,
+        emergencyContactName: emergencyProfile.emergencyContactName || undefined,
+        emergencyContactPhone: emergencyProfile.emergencyContactPhone || undefined,
+      });
+      setActiveCallId(res.callId);
+      setCallElapsed(0);
+      toast.success('Emergency call started', {
+        description: 'LUMOS AI is speaking to the operator on your behalf.',
+      });
+    } catch (e) {
+      toast.error('Could not start call', {
+        description: e instanceof Error ? e.message : 'Check your connection',
+      });
+    } finally {
+      isStartingCallRef.current = false;
+    }
+  }, [emergencyProfile, isProfileComplete, locationCoords, locationName, safetyData, activeCallId]);
 
   // Keyboard shortcut: '/' focuses search
   useEffect(() => {
@@ -733,14 +810,10 @@ const Index = () => {
         style={{
           background:
             appState === 'landing'
-              ? isLight
-                ? 'radial-gradient(ellipse at center, transparent 30%, hsl(220 20% 97% / 0.6) 100%)'
-                : 'radial-gradient(ellipse at center, transparent 30%, hsl(222 47% 4% / 0.7) 100%)'
+              ? 'radial-gradient(ellipse at center, transparent 30%, hsl(222 47% 4% / 0.7) 100%)'
               : appState === 'results' && window.innerWidth < 768
                 ? 'none'
-                : isLight
-                  ? 'linear-gradient(to right, hsl(220 20% 97% / 0.9) 0%, hsl(220 20% 97% / 0.5) 50%, transparent 100%)'
-                  : 'linear-gradient(to right, hsl(222 47% 4% / 0.85) 0%, hsl(222 47% 4% / 0.4) 50%, transparent 100%)',
+                : 'linear-gradient(to right, hsl(222 47% 4% / 0.85) 0%, hsl(222 47% 4% / 0.4) 50%, transparent 100%)',
           transition: 'background 1s ease',
         }}
       />
@@ -751,7 +824,6 @@ const Index = () => {
           <LumosLogo size={36} />
         </button>
         <div className="flex items-center gap-1.5 sm:gap-2 overflow-x-auto scrollbar-hide flex-shrink min-w-0">
-          <ThemeToggle />
           {appState !== 'loading' && (
             <motion.button
               key="show-location"
@@ -844,6 +916,35 @@ const Index = () => {
               </motion.button>
             </>
           )}
+          <motion.button
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            onClick={handleCall911}
+            disabled={!!activeCallId}
+            className="header-btn flex items-center gap-1.5 text-sm transition-colors glass-panel px-2.5 sm:px-3 py-2 rounded-xl flex-shrink-0 bg-red-500/20 border border-red-500/40 text-lumos-danger hover:bg-red-500/30 active:bg-red-500/40 disabled:opacity-50"
+            title="Emergency 911 — LUMOS AI"
+            aria-label="Emergency 911"
+          >
+            <Phone className="w-4 h-4" />
+            <span className="hidden sm:inline text-xs font-semibold">911</span>
+          </motion.button>
+          <motion.button
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            onClick={() => setEmergencyProfileOpen(true)}
+            className={`header-btn flex items-center gap-1.5 text-sm transition-colors glass-panel px-2.5 sm:px-3 py-2 rounded-xl flex-shrink-0 ${
+              isProfileComplete
+                ? 'text-lumos-safe'
+                : 'text-lumos-danger animate-pulse'
+            }`}
+            title="Emergency profile"
+            aria-label="Emergency profile"
+          >
+            <Heart className="w-4 h-4" />
+            <span className="hidden sm:inline text-xs">
+              {isProfileComplete ? 'Emergency Info' : 'Set Emergency Info'}
+            </span>
+          </motion.button>
           <UserMenu onOpenSaved={() => setSavedPanelOpen(true)} />
         </div>
       </div>
@@ -1043,16 +1144,7 @@ const Index = () => {
                   />
                 )}
                 {stateAbbr && <HistoricalTrends state={stateAbbr} expanded={activePanel === 'trends'} />}
-                <EmergencyResources locationName={locationName} numbers={safetyData.emergencyNumbers} expanded={activePanel === 'emergency'} />
-                {activePanel === 'emergency' && locationCoords && (
-                  <button
-                    onClick={() => setEmergencyCallModalOpen(true)}
-                    className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-lumos-danger text-white font-medium hover:bg-lumos-danger/90 active:bg-lumos-danger/80 transition-colors"
-                  >
-                    <Phone className="w-5 h-5" />
-                    Call with LUMOS AI (VAPI)
-                  </button>
-                )}
+                <EmergencyResources locationName={locationName} numbers={safetyData.emergencyNumbers} expanded={activePanel === 'emergency'} onCall911={handleCall911} />
                 {locationCoords && (
                   <ReportIncident lat={locationCoords.lat} lng={locationCoords.lng} userId={user?.uid} expanded={activePanel === 'report'} />
                 )}
@@ -1201,16 +1293,7 @@ const Index = () => {
                     />
                   )}
                   {stateAbbr && <HistoricalTrends state={stateAbbr} expanded={activePanel === 'trends'} />}
-                  <EmergencyResources locationName={locationName} numbers={safetyData.emergencyNumbers} expanded={activePanel === 'emergency'} />
-                  {activePanel === 'emergency' && locationCoords && (
-                    <button
-                      onClick={() => setEmergencyCallModalOpen(true)}
-                      className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-lumos-danger text-white font-medium hover:bg-lumos-danger/90 active:bg-lumos-danger/80 transition-colors"
-                    >
-                      <Phone className="w-5 h-5" />
-                      Call with LUMOS AI (VAPI)
-                    </button>
-                  )}
+                  <EmergencyResources locationName={locationName} numbers={safetyData.emergencyNumbers} expanded={activePanel === 'emergency'} onCall911={handleCall911} />
                   {locationCoords && (
                     <ReportIncident lat={locationCoords.lat} lng={locationCoords.lng} userId={user?.uid} expanded={activePanel === 'report'} />
                   )}
@@ -1221,17 +1304,26 @@ const Index = () => {
         </motion.div>
       )}
 
-      {/* Emergency call modal (VAPI) — shown when user taps "Call with LUMOS AI" */}
-      {locationCoords && safetyData && (
-        <EmergencyCallModal
-          open={emergencyCallModalOpen}
-          onOpenChange={setEmergencyCallModalOpen}
-          lat={locationCoords.lat}
-          lng={locationCoords.lng}
-          address={locationName}
-          safetyScore={safetyData.safetyIndex}
-        />
-      )}
+      {/* Active emergency call floating bar */}
+      <AnimatePresence>
+        {activeCallId && (
+          <ActiveCallBar
+            callId={activeCallId}
+            elapsed={callElapsed}
+            onEnd={() => { setActiveCallId(null); setCallElapsed(0); }}
+            lat={locationCoords?.lat ?? 0}
+            lng={locationCoords?.lng ?? 0}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Emergency profile modal */}
+      <EmergencyProfileModal
+        open={emergencyProfileOpen}
+        onOpenChange={setEmergencyProfileOpen}
+        profile={emergencyProfile}
+        onSave={setEmergencyProfile}
+      />
 
       {/* Results: Route */}
       {isRouteResults && routeData && (
@@ -1325,7 +1417,7 @@ const Index = () => {
                 <EmergencyResources locationName={destName} numbers={[
                   { label: 'Emergency', number: '911', icon: 'phone', color: 'danger' },
                   { label: 'Police (non-emergency)', number: '311', icon: 'shield', color: 'caution' },
-                ]} />
+                ]} onCall911={handleCall911} />
               </div>
             </div>
           </div>
@@ -1438,7 +1530,7 @@ const Index = () => {
                   <EmergencyResources locationName={destName} numbers={[
                     { label: 'Emergency', number: '911', icon: 'phone', color: 'danger' },
                     { label: 'Police (non-emergency)', number: '311', icon: 'shield', color: 'caution' },
-                  ]} />
+                  ]} onCall911={handleCall911} />
                 </div>
               </motion.div>
             )}
