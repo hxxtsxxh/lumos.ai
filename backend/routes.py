@@ -1,0 +1,1081 @@
+"""Lumos Backend — FastAPI Routes"""
+
+import asyncio
+import math
+import logging
+import time
+import uuid
+from datetime import datetime
+import numpy as np
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+
+from config import GOOGLE_MAPS_API_KEY, GEMINI_API_KEY
+from models import (
+    SafetyRequest, RouteRequest, UserReport,
+    SafetyResponse, RouteResponse, HistoricalResponse,
+    UserReportResponse, IncidentType, TimeAnalysis,
+    DataSource, HeatmapPoint, HourlyRisk, NearbyPOI,
+    RouteSegment, HistoricalDataPoint, AISafetyTipsRequest,
+    WeatherInfo,
+)
+from data_fetchers import (
+    client, fetch_fbi_crime_data, fetch_fbi_historical,
+    fetch_fbi_nibrs_detail,
+    fetch_city_crime_data, fetch_nws_weather,
+    fetch_census_population, fetch_state_from_coords,
+    reverse_geocode_city, fetch_country_from_coords,
+    fetch_nearby_pois, fetch_route_directions,
+    fetch_local_events, fetch_moon_illumination, fetch_live_incidents,
+    fetch_citizen_incidents,
+)
+from scoring import (
+    compute_safety_score,
+    compute_heatmap_from_incidents, generate_synthetic_heatmap,
+    get_emergency_numbers, build_incident_types,
+    estimate_local_crime_rate,
+    gemini_refine_score,
+    gemini_enrich_heatmap,
+    update_incident_crime_level,
+    compute_citizen_adjustment,
+)
+from ml_model import safety_model
+from nibrs_data import initialize_nibrs, get_state_crime_profile
+
+logger = logging.getLogger("lumos")
+
+
+async def _noop_dict() -> dict:
+    """Async no-op returning empty dict, for use in asyncio.gather when a fetch should be skipped."""
+    return {}
+
+
+# ─────────────────────────── App Setup ──────────────────────────
+
+app = FastAPI(title="Lumos Safety API", version="3.0.0")
+
+_allowed_origins = [
+    f"http://localhost:{p}" for p in range(3000, 3010)
+] + [
+    f"http://localhost:{p}" for p in range(5173, 5180)
+] + [
+    f"http://localhost:{p}" for p in range(8080, 8090)
+] + [
+    f"http://127.0.0.1:{p}" for p in range(3000, 3010)
+] + [
+    f"http://127.0.0.1:{p}" for p in range(5173, 5180)
+] + [
+    f"http://127.0.0.1:{p}" for p in range(8080, 8090)
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_allowed_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ─────────────────────────── Startup Event ──────────────────────
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize NIBRS data pipeline on startup."""
+    initialize_nibrs()
+    logger.info("XGBoost model will lazy-load on first prediction")
+
+
+# ─────────────────────────── Rate Limiting ──────────────────────
+
+_rate_store: dict[str, list[float]] = {}
+RATE_LIMIT = 30  # requests per minute per IP
+RATE_WINDOW = 60  # seconds
+_RATE_EVICT_INTERVAL = 300  # evict stale IPs every 5 minutes
+_last_rate_evict = 0.0
+
+
+@app.middleware("http")
+async def rate_limit_middleware(request: Request, call_next):
+    from fastapi.responses import JSONResponse
+    client_ip = request.client.host if request.client else "unknown"
+    now = time.time()
+
+    # Periodically evict stale IPs to prevent memory leak
+    global _last_rate_evict
+    if now - _last_rate_evict > _RATE_EVICT_INTERVAL:
+        stale_ips = [ip for ip, timestamps in _rate_store.items()
+                     if not timestamps or now - timestamps[-1] > RATE_WINDOW * 2]
+        for ip in stale_ips:
+            del _rate_store[ip]
+        _last_rate_evict = now
+
+    # Clean old entries for this IP
+    if client_ip in _rate_store:
+        _rate_store[client_ip] = [t for t in _rate_store[client_ip] if now - t < RATE_WINDOW]
+    else:
+        _rate_store[client_ip] = []
+
+    if len(_rate_store[client_ip]) >= RATE_LIMIT:
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Rate limit exceeded. Try again in a minute."},
+        )
+
+    _rate_store[client_ip].append(now)
+    return await call_next(request)
+
+
+# ─────────────────────────── In-memory user reports ─────────────
+
+user_reports: list[dict] = []
+
+
+# ─────────────────────────── Main Safety Endpoint ───────────────
+
+@app.post("/api/safety", response_model=SafetyResponse)
+async def get_safety_data(req: SafetyRequest):
+    city = req.locationName or ""
+    if not city:
+        city = await reverse_geocode_city(req.lat, req.lng)
+
+    logger.info(f"Safety request: {city} ({req.lat:.4f}, {req.lng:.4f})")
+
+    state_abbr = await fetch_state_from_coords(req.lat, req.lng)
+
+    fbi_data, city_crime_result, weather, population, country_code, pois, nibrs_detail, live_events, live_incidents, moon_illumination, citizen_incidents = await asyncio.gather(
+        fetch_fbi_crime_data(state_abbr),
+        fetch_city_crime_data(req.lat, req.lng, city),
+        fetch_nws_weather(req.lat, req.lng),
+        fetch_census_population(req.lat, req.lng),
+        fetch_country_from_coords(req.lat, req.lng),
+        fetch_nearby_pois(req.lat, req.lng),
+        fetch_fbi_nibrs_detail(state_abbr) if state_abbr else _noop_dict(),
+        fetch_local_events(req.lat, req.lng),
+        fetch_live_incidents(req.lat, req.lng),
+        fetch_moon_illumination(req.lat, req.lng),
+        fetch_citizen_incidents(req.lat, req.lng),
+    )
+
+    city_incidents = city_crime_result.get("incidents", [])
+    total_annual_crime = city_crime_result.get("total_annual_count", len(city_incidents))
+
+    # Build state-level crime profile FIRST (needed for data sources & scoring)
+    crime_profile = get_state_crime_profile(state_abbr, fbi_data, nibrs_detail)
+
+    # Data sources
+    data_sources = []
+    if fbi_data:
+        data_sources.append(DataSource(
+            name="FBI Crime Data Explorer (UCR)",
+            lastUpdated=f"{fbi_data.get('year', 2023)}-12-31",
+            recordCount=fbi_data.get("record_count", 0),
+        ))
+    if crime_profile:
+        profile_src = crime_profile.get("source", "FBI CDE + BJS")
+        data_sources.append(DataSource(
+            name=f"Crime Profile ({profile_src})",
+            lastUpdated=f"{fbi_data.get('year', 2023)}-12-31" if fbi_data else "2023-12-31",
+            recordCount=fbi_data.get("record_count", 0) if fbi_data else 0,
+        ))
+    if city_incidents:
+        city_name = city.split(",")[0].strip() if city else "City"
+        data_sources.append(DataSource(
+            name=f"{city_name} Open Data Portal",
+            lastUpdated=datetime.utcnow().strftime("%Y-%m-%d"),
+            recordCount=total_annual_crime,
+        ))
+    if weather.get("alert_count", 0) > 0:
+        data_sources.append(DataSource(
+            name="National Weather Service Alerts",
+            lastUpdated=datetime.utcnow().strftime("%Y-%m-%d"),
+            recordCount=weather["alert_count"],
+        ))
+    data_sources.append(DataSource(
+        name="U.S. Census Bureau (Population)",
+        lastUpdated="2020-04-01",
+        recordCount=population,
+    ))
+
+    # Crime rate — estimate LOCAL rate rather than using raw state average
+    crime_rate_per_100k = 0.0
+    state_rate_per_100k = 0.0
+    if fbi_data and fbi_data.get("population"):
+        total_crime = fbi_data.get("violent_crime", 0) + fbi_data.get("property_crime", 0)
+        state_rate_per_100k = (total_crime / fbi_data["population"]) * 100_000
+        # Adjust for local area type (urban/suburban/rural)
+        crime_rate_per_100k = estimate_local_crime_rate(
+            state_rate_per_100k,
+            population,
+            city_name=city,
+            city_incidents=city_incidents,
+            total_annual_crime=total_annual_crime,
+            state_abbr=state_abbr,
+        )
+    elif total_annual_crime > 0 and population > 0:
+        crime_rate_per_100k = min((total_annual_crime / population) * 100_000, 8000)
+
+    try:
+        hour = int(req.timeOfTravel.split(":")[0])
+        if not (0 <= hour <= 23):
+            hour = 12
+    except (ValueError, IndexError):
+        hour = 12
+
+    # Incident types — built AFTER crime rate so we can pass the crime level context
+    incident_types = build_incident_types(
+        city_incidents, fbi_data, crime_rate_per_100k,
+        user_lat=req.lat, user_lng=req.lng,
+        city_name=city, state_abbr=state_abbr,
+        location=req.locationName or "",
+        hour=hour,
+    )
+
+    # Extract dynamic location features
+    city_lower = (city or "").lower()
+    is_college = 1.0 if any(k in city_lower for k in ["university", "college", "institute", "tech"]) else 0.0
+    if not is_college and pois:
+        if any("university" in p.get("type", "").lower() or "college" in p.get("name", "").lower() for p in pois):
+            is_college = 1.0
+    is_urban = 1.0 if population > 250_000 else 0.0
+    is_weekend = 1.0 if datetime.utcnow().weekday() >= 5 else 0.0
+    poi_density = min(len(pois) / 50.0, 1.0) if pois else 0.0
+    is_after_sunset = 1.0 if (hour >= 18 or hour < 6) else 0.0
+
+    safety_index, _ = compute_safety_score(
+        crime_rate_per_100k, hour, req.peopleCount, req.gender,
+        weather.get("max_severity", 0.0), population,
+        city_incidents, safety_model,
+        duration_minutes=req.duration,
+        state_abbr=state_abbr,
+        crime_profile=crime_profile,
+        is_college=is_college,
+        is_urban=is_urban,
+        is_weekend=is_weekend,
+        poi_density=poi_density,
+        lat=req.lat,
+        lng=req.lng,
+        live_events=live_events,
+        live_incidents=len(live_incidents),
+        moon_illumination=moon_illumination,
+        city_name=city,
+    )
+
+    risk_level = "safe" if safety_index >= 70 else "caution" if safety_index >= 40 else "danger"
+
+    # ── Citizen Incident Adjustment (real-time penalty) ──
+    cia_penalty = compute_citizen_adjustment(
+        target_lat=req.lat,
+        target_lng=req.lng,
+        citizen_incidents=citizen_incidents,
+        current_hour=hour,
+        target_hour=None,  # current-time query → full weight
+    )
+    if cia_penalty > 0:
+        safety_index = max(5, safety_index - int(round(cia_penalty)))
+        risk_level = "safe" if safety_index >= 70 else "caution" if safety_index >= 40 else "danger"
+        logger.info(f"CIA: penalty={cia_penalty:.1f}, {len(citizen_incidents)} incidents, adjusted safety_index={safety_index}")
+
+    # ── Gemini refinement layer (best-effort, won't block on failure) ──
+    safety_index = await gemini_refine_score(
+        safety_index,
+        city_name=city,
+        state_abbr=state_abbr,
+        hour=hour,
+        crime_rate=crime_rate_per_100k,
+        weather_condition=weather.get("owm_condition", "Clear"),
+        weather_severity=weather.get("max_severity", 0.0),
+        people_count=req.peopleCount,
+        gender=req.gender,
+        incident_types=[it.type for it in incident_types[:5]],
+    )
+    risk_level = "safe" if safety_index >= 70 else "caution" if safety_index >= 40 else "danger"
+
+    # Update crime level tags to match the FINAL safety score (ML + Gemini)
+    update_incident_crime_level(incident_types, safety_index)
+
+    # Compute a true 24-hour trace utilizing the full dimension set (ML natively shifts peak)
+    hourly_risk = []
+    risk_values = []
+    
+    def format_hour(start_h):
+        h = start_h % 24
+        if h == 0: return "12a"
+        elif h < 12: return f"{h}a"
+        elif h == 12: return "12p"
+        else: return f"{h-12}p"
+
+    for h in range(24):
+        h_is_after_sunset = 1.0 if (h >= 18 or h < 6) else 0.0
+        s_idx, _ = compute_safety_score(
+            crime_rate_per_100k, h, req.peopleCount, req.gender,
+            weather.get("max_severity", 0.0), population, city_incidents, safety_model,
+            duration_minutes=req.duration, state_abbr=state_abbr, crime_profile=crime_profile,
+            is_college=is_college, is_urban=is_urban, is_weekend=is_weekend,
+            poi_density=poi_density,
+            lat=req.lat, lng=req.lng,
+            live_events=live_events, live_incidents=len(live_incidents),
+            moon_illumination=moon_illumination,
+            city_name=city,
+        )
+        # Apply CIA with forecast decay for this hour
+        h_cia = compute_citizen_adjustment(
+            target_lat=req.lat,
+            target_lng=req.lng,
+            citizen_incidents=citizen_incidents,
+            current_hour=hour,
+            target_hour=h,
+        )
+        s_idx = max(5, s_idx - int(round(h_cia)))
+        risk_val = 100 - s_idx  # Higher score = safer, so risk = 100 - safety
+        risk_values.append(risk_val)
+
+    # ── Amplify temporal contrast ──
+    # The ML model produces modest hour-to-hour swings (typically 10-17 pts).
+    # Amplify deviations from the 24-hour mean by ~2.5× so the chart clearly
+    # shows the day/night swing while keeping the mean risk truthful.
+    mean_risk = sum(risk_values) / 24
+    TEMPORAL_AMP = 2.5
+    amplified = [
+        max(5, min(95, round(mean_risk + (r - mean_risk) * TEMPORAL_AMP)))
+        for r in risk_values
+    ]
+    for h in range(24):
+        hourly_risk.append({"hour": format_hour(h), "risk": amplified[h]})
+
+    # Sliding 4-hour window for truly dynamic Peak/Safest extraction
+    window_size = 4
+    extended = risk_values + risk_values
+    
+    max_sum = -1
+    peak_start = 0
+    for i in range(24):
+        w_sum = sum(extended[i:i+window_size])
+        if w_sum > max_sum:
+            max_sum = w_sum
+            peak_start = i
+            
+    min_sum = 99999
+    safe_start = 0
+    for i in range(24):
+        w_sum = sum(extended[i:i+window_size])
+        if w_sum < min_sum:
+            min_sum = w_sum
+            safe_start = i
+
+    def hour_range_label(start: int) -> str:
+        end = (start + window_size - 1) % 24
+        s_idx = start % 24
+        def fmt(h):
+            if h == 0: return "12 AM"
+            elif h < 12: return f"{h} AM"
+            elif h == 12: return "12 PM"
+            else: return f"{h-12} PM"
+        return f"{fmt(s_idx)} – {fmt(end)}"
+
+    time_analysis = TimeAnalysis(
+        currentRisk=risk_values[hour],
+        peakHours=hour_range_label(peak_start),
+        safestHours=hour_range_label(safe_start),
+    )
+
+    heatmap_points = compute_heatmap_from_incidents(city_incidents, req.lat, req.lng)
+    heatmap_points = generate_synthetic_heatmap(
+        req.lat, req.lng, safety_index, heatmap_points,
+        nearby_pois=pois, incident_types=incident_types
+    )
+
+    emergency_numbers = get_emergency_numbers(state_abbr, city, country_code)
+
+    # Include nearby user reports in heatmap
+    for report in user_reports:
+        dlat = abs(report["lat"] - req.lat)
+        dlng = abs(report["lng"] - req.lng)
+        if dlat < 0.05 and dlng < 0.05:
+            heatmap_points.append({
+                "lat": report["lat"],
+                "lng": report["lng"],
+                "weight": report["severity"] / 5.0,
+                "type": report.get("category", "User Report"),
+            })
+
+    # ── Gemini heatmap enrichment (adds contextual descriptions to hover) ──
+    heatmap_points = await gemini_enrich_heatmap(
+        heatmap_points,
+        city_name=city,
+        state_abbr=state_abbr,
+        crime_rate=crime_rate_per_100k,
+        hour=hour,
+        incident_types=incident_types,
+    )
+
+    nearby_pois = [NearbyPOI(**p) for p in pois]
+
+    weather_info = WeatherInfo(
+        condition=weather.get("owm_condition", "Clear"),
+        description=weather.get("owm_description", ""),
+        icon=weather.get("owm_icon", "01d"),
+        temp_celsius=weather.get("temp_celsius"),
+        humidity=weather.get("humidity"),
+        wind_speed=weather.get("wind_speed"),
+        alert_count=weather.get("alert_count", 0),
+    )
+
+    return SafetyResponse(
+        safetyIndex=safety_index,
+        riskLevel=risk_level,
+        incidentTypes=incident_types,
+        timeAnalysis=time_analysis,
+        dataSources=data_sources,
+        hourlyRisk=[HourlyRisk(**h) for h in hourly_risk],
+        heatmapPoints=[HeatmapPoint(**p) for p in heatmap_points],
+        heatmapIncidentCount=total_annual_crime,
+        emergencyNumbers=emergency_numbers,
+        nearbyPOIs=nearby_pois,
+        weather=weather_info,
+    )
+
+
+# ─────────────────────────── Route Analysis ─────────────────────
+
+@app.post("/api/route", response_model=RouteResponse)
+async def get_route_safety(req: RouteRequest):
+    """Analyze safety along a route.
+
+    Key improvements over v2:
+    - Fetches crime / weather / events for BOTH origin and destination
+    - Interpolates data along intermediate segments
+    - Advances the hour per-segment based on elapsed travel time
+    - Passes full route duration (not per-segment fragment) for exposure penalty
+    - Uses minimum-aware overall scoring so a single danger segment is not hidden
+    - Returns rich data: incidentTypes, timeAnalysis, hourlyRisk, dataSources
+    """
+    directions = await fetch_route_directions(
+        req.originLat, req.originLng,
+        req.destLat, req.destLng,
+        req.mode,
+    )
+
+    if not directions or not directions.get("points"):
+        raise HTTPException(status_code=404, detail="Could not find route")
+
+    points = directions["points"]
+    try:
+        hour = int(req.timeOfTravel.split(":")[0])
+        if not (0 <= hour <= 23):
+            hour = 12
+    except (ValueError, IndexError):
+        hour = 12
+
+    # Parse duration into minutes
+    total_duration_min = max(1, directions.get("duration_seconds", 1800) // 60)
+
+    # ── Sample points along the route ───────────────────────────
+    step = max(1, len(points) // 10)
+    sample_points = points[::step]
+    if points[-1] not in sample_points:
+        sample_points.append(points[-1])
+    n_segments = max(len(sample_points) - 1, 1)
+
+    # ── Fetch data for BOTH origin AND destination in parallel ──
+    origin_pt = sample_points[0]
+    dest_pt = sample_points[-1]
+
+    origin_state, dest_state, origin_city, dest_city = await asyncio.gather(
+        fetch_state_from_coords(origin_pt[0], origin_pt[1]),
+        fetch_state_from_coords(dest_pt[0], dest_pt[1]),
+        reverse_geocode_city(origin_pt[0], origin_pt[1]),
+        reverse_geocode_city(dest_pt[0], dest_pt[1]),
+    )
+
+    # Fetch full data for both endpoints
+    (
+        origin_fbi, origin_pop, origin_weather, origin_crime, origin_nibrs,
+        origin_live_events, origin_live_incidents, origin_moon, origin_pois,
+        origin_citizen,
+        dest_fbi, dest_pop, dest_weather, dest_crime, dest_nibrs,
+        dest_live_events, dest_live_incidents, dest_moon, dest_pois,
+        dest_citizen,
+    ) = await asyncio.gather(
+        # Origin fetches
+        fetch_fbi_crime_data(origin_state) if origin_state else _noop_dict(),
+        fetch_census_population(origin_pt[0], origin_pt[1]),
+        fetch_nws_weather(origin_pt[0], origin_pt[1]),
+        fetch_city_crime_data(origin_pt[0], origin_pt[1], origin_city),
+        fetch_fbi_nibrs_detail(origin_state) if origin_state else _noop_dict(),
+        fetch_local_events(origin_pt[0], origin_pt[1]),
+        fetch_live_incidents(origin_pt[0], origin_pt[1]),
+        fetch_moon_illumination(origin_pt[0], origin_pt[1]),
+        fetch_nearby_pois(origin_pt[0], origin_pt[1]),
+        fetch_citizen_incidents(origin_pt[0], origin_pt[1]),
+        # Destination fetches
+        fetch_fbi_crime_data(dest_state) if dest_state else _noop_dict(),
+        fetch_census_population(dest_pt[0], dest_pt[1]),
+        fetch_nws_weather(dest_pt[0], dest_pt[1]),
+        fetch_city_crime_data(dest_pt[0], dest_pt[1], dest_city),
+        fetch_fbi_nibrs_detail(dest_state) if dest_state else _noop_dict(),
+        fetch_local_events(dest_pt[0], dest_pt[1]),
+        fetch_live_incidents(dest_pt[0], dest_pt[1]),
+        fetch_moon_illumination(dest_pt[0], dest_pt[1]),
+        fetch_nearby_pois(dest_pt[0], dest_pt[1]),
+        fetch_citizen_incidents(dest_pt[0], dest_pt[1]),
+    )
+
+    # ── Helper: derive crime rate from FBI data ─────────────────
+    def _crime_rate(fbi_data, population, city_name, city_crime_result, state_abbr):
+        city_incidents = city_crime_result.get("incidents", [])
+        total_annual = city_crime_result.get("total_annual_count", len(city_incidents))
+        if fbi_data and fbi_data.get("population"):
+            total_crime = fbi_data.get("violent_crime", 0) + fbi_data.get("property_crime", 0)
+            state_rate = (total_crime / fbi_data["population"]) * 100_000
+            return estimate_local_crime_rate(
+                state_rate, population, city_name=city_name,
+                city_incidents=city_incidents, total_annual_crime=total_annual,
+                state_abbr=state_abbr,
+            ), city_incidents, total_annual
+        elif total_annual > 0 and population > 0:
+            return min((total_annual / population) * 100_000, 8000), city_incidents, total_annual
+        return 0.0, city_incidents, total_annual
+
+    origin_rate, origin_incidents, origin_annual = _crime_rate(
+        origin_fbi, origin_pop, origin_city, origin_crime, origin_state)
+    dest_rate, dest_incidents, dest_annual = _crime_rate(
+        dest_fbi, dest_pop, dest_city, dest_crime, dest_state)
+
+    # Merge all incidents for density computation
+    all_incidents = origin_incidents + [
+        inc for inc in dest_incidents
+        if inc not in origin_incidents  # rough dedup
+    ]
+
+    # Crime profiles for origin & destination
+    origin_profile = get_state_crime_profile(origin_state, origin_fbi, origin_nibrs)
+    dest_profile = get_state_crime_profile(dest_state, dest_fbi, dest_nibrs)
+
+    # ── Incident density helper ─────────────────────────────────
+    def _nearby_incident_density(lat: float, lng: float, incidents: list[dict], radius_deg: float = 0.01) -> int:
+        count = 0
+        for inc in incidents:
+            try:
+                ilat = float(inc.get("lat", 0))
+                ilng = float(inc.get("lng", 0))
+                if ilat == 0 or ilng == 0:
+                    continue
+                if abs(ilat - lat) < radius_deg and abs(ilng - lng) < radius_deg:
+                    count += 1
+            except (ValueError, TypeError):
+                continue
+        return count
+
+    # Precompute segment densities
+    segment_densities = []
+    for i in range(n_segments):
+        mid_lat = (sample_points[i][0] + sample_points[i + 1][0]) / 2
+        mid_lng = (sample_points[i][1] + sample_points[i + 1][1]) / 2
+        segment_densities.append(_nearby_incident_density(mid_lat, mid_lng, all_incidents))
+    max_density = max(segment_densities) if segment_densities else 1
+
+    # ── Build segments with per-segment safety scores ───────────
+    segments = []
+    segment_scores = []
+    is_weekend = 1.0 if datetime.utcnow().weekday() >= 5 else 0.0
+    minutes_per_segment = total_duration_min / n_segments
+
+    for i in range(n_segments):
+        start = sample_points[i]
+        end = sample_points[i + 1]
+        t = i / max(n_segments - 1, 1)  # interpolation factor 0..1
+
+        # Advance hour based on elapsed travel time
+        elapsed_min = i * minutes_per_segment
+        segment_hour = (hour + int(elapsed_min) // 60) % 24
+
+        # Interpolate crime rate between origin and destination
+        seg_crime_rate = origin_rate * (1 - t) + dest_rate * t
+
+        # Interpolate population
+        seg_population = int(origin_pop * (1 - t) + dest_pop * t)
+
+        # Interpolate weather severity
+        origin_sev = origin_weather.get("max_severity", 0.0)
+        dest_sev = dest_weather.get("max_severity", 0.0)
+        seg_weather = origin_sev * (1 - t) + dest_sev * t
+
+        # Select matching profile
+        seg_profile = origin_profile if t < 0.5 else dest_profile
+        seg_state = origin_state if t < 0.5 else dest_state
+        seg_city = origin_city if t < 0.5 else dest_city
+
+        # Interpolate live data
+        seg_live_events = int(origin_live_events * (1 - t) + dest_live_events * t)
+        seg_live_incidents_count = int(len(origin_live_incidents) * (1 - t) + len(dest_live_incidents) * t)
+        seg_moon = origin_moon * (1 - t) + dest_moon * t
+
+        # Local crime density variation
+        if max_density > 0 and all_incidents:
+            density_ratio = segment_densities[i] / max_density
+            local_variation = 0.85 + density_ratio * 0.40
+        else:
+            rng = np.random.default_rng(abs(int(start[0] * 10000)) + abs(int(start[1] * 10000)))
+            local_variation = rng.uniform(0.9, 1.1)
+
+        # Dynamic location features
+        city_lower = (seg_city or "").lower()
+        is_college = 1.0 if any(k in city_lower for k in ["university", "college", "institute", "tech"]) else 0.0
+        is_urban = 1.0 if seg_population > 250_000 else 0.0
+        seg_pois = origin_pois if t < 0.5 else dest_pois
+        poi_density = min(len(seg_pois) / 50.0, 1.0) if seg_pois else 0.0
+
+        score, _ = compute_safety_score(
+            seg_crime_rate * local_variation, segment_hour,
+            req.peopleCount, req.gender,
+            seg_weather, seg_population,
+            all_incidents, safety_model,
+            duration_minutes=total_duration_min,
+            state_abbr=seg_state,
+            crime_profile=seg_profile,
+            is_college=is_college,
+            is_urban=is_urban,
+            is_weekend=is_weekend,
+            poi_density=poi_density,
+            lat=start[0],
+            lng=start[1],
+            live_events=seg_live_events,
+            live_incidents=seg_live_incidents_count,
+            moon_illumination=seg_moon,
+            city_name=seg_city or "",
+        )
+        # Apply CIA — interpolate citizen incidents based on position along route
+        seg_citizen = origin_citizen if t < 0.5 else dest_citizen
+        seg_cia = compute_citizen_adjustment(
+            target_lat=start[0], target_lng=start[1],
+            citizen_incidents=seg_citizen,
+            current_hour=hour,
+            target_hour=segment_hour,
+        )
+        score = max(5, score - int(round(seg_cia)))
+        segment_scores.append(score)
+        risk = "safe" if score >= 70 else "caution" if score >= 40 else "danger"
+        segments.append(RouteSegment(
+            startLat=start[0], startLng=start[1],
+            endLat=end[0], endLng=end[1],
+            safetyScore=score, riskLevel=risk,
+        ))
+
+    # ── Minimum-aware overall scoring ───────────────────────────
+    if segment_scores:
+        mean_score = int(np.mean(segment_scores))
+        min_score = int(min(segment_scores))
+        # Don't let averaging hide a dangerous segment
+        if min_score < 40:
+            overall = min(mean_score, min_score + 10)
+        else:
+            overall = mean_score
+    else:
+        overall = 50
+
+    # ── Gemini refinement on overall route score ────────────────
+    overall = await gemini_refine_score(
+        overall,
+        city_name=origin_city,
+        state_abbr=origin_state,
+        hour=hour,
+        crime_rate=origin_rate,
+        weather_condition=origin_weather.get("owm_condition", "Clear"),
+        weather_severity=max(origin_weather.get("max_severity", 0), dest_weather.get("max_severity", 0)),
+        people_count=req.peopleCount,
+        gender=req.gender,
+        is_route=True,
+    )
+    overall_risk = "safe" if overall >= 70 else "caution" if overall >= 40 else "danger"
+
+    # ── Warnings ────────────────────────────────────────────────
+    warnings = []
+    danger_segments = [s for s in segments if s.riskLevel == "danger"]
+    caution_segments = [s for s in segments if s.riskLevel == "caution"]
+    if danger_segments:
+        warnings.append(f"{len(danger_segments)} segment(s) have elevated risk — consider alternate route.")
+    if caution_segments and not danger_segments:
+        warnings.append(f"{len(caution_segments)} segment(s) require caution.")
+    if hour < 6 or hour >= 22:
+        warnings.append("Late night travel — consider extra precautions.")
+    max_weather = max(origin_weather.get("max_severity", 0), dest_weather.get("max_severity", 0))
+    if max_weather > 0.5:
+        warnings.append("Active weather alerts along the route.")
+    if total_duration_min > 120:
+        warnings.append(f"Long trip ({total_duration_min} min) — plan rest stops and stay aware.")
+    if origin_state != dest_state and origin_state and dest_state:
+        warnings.append(f"Route crosses state lines ({origin_state} → {dest_state}).")
+
+    # ── Build rich response data ────────────────────────────────
+    # Incident types from combined incidents
+    incident_types = build_incident_types(
+        all_incidents, origin_fbi, origin_rate,
+        user_lat=origin_pt[0], user_lng=origin_pt[1],
+        city_name=origin_city, state_abbr=origin_state,
+        location=origin_city or "",
+        hour=hour,
+    )
+    update_incident_crime_level(incident_types, overall)
+
+    # Data sources
+    data_sources = []
+    if origin_fbi:
+        data_sources.append(DataSource(
+            name=f"FBI UCR ({origin_state or 'Origin'})",
+            lastUpdated=f"{origin_fbi.get('year', 2023)}-12-31",
+            recordCount=origin_fbi.get("record_count", 0),
+        ))
+    if dest_fbi and dest_state != origin_state:
+        data_sources.append(DataSource(
+            name=f"FBI UCR ({dest_state or 'Dest'})",
+            lastUpdated=f"{dest_fbi.get('year', 2023)}-12-31",
+            recordCount=dest_fbi.get("record_count", 0),
+        ))
+    if all_incidents:
+        data_sources.append(DataSource(
+            name="City Open Data Portals",
+            lastUpdated=datetime.utcnow().strftime("%Y-%m-%d"),
+            recordCount=len(all_incidents),
+        ))
+    data_sources.append(DataSource(
+        name="U.S. Census Bureau",
+        lastUpdated="2020-04-01",
+        recordCount=origin_pop + dest_pop,
+    ))
+
+    # Time analysis — use departure hour analysis at origin
+    hourly_risk = []
+    risk_values = []
+
+    def format_hour(h):
+        h = h % 24
+        if h == 0: return "12a"
+        elif h < 12: return f"{h}a"
+        elif h == 12: return "12p"
+        else: return f"{h-12}p"
+
+    for h in range(24):
+        s_idx, _ = compute_safety_score(
+            origin_rate, h, req.peopleCount, req.gender,
+            origin_weather.get("max_severity", 0.0), origin_pop,
+            origin_incidents, safety_model,
+            duration_minutes=total_duration_min,
+            state_abbr=origin_state,
+            crime_profile=origin_profile,
+            is_college=1.0 if any(k in (origin_city or "").lower() for k in ["university", "college"]) else 0.0,
+            is_urban=1.0 if origin_pop > 250_000 else 0.0,
+            is_weekend=is_weekend,
+            poi_density=min(len(origin_pois) / 50.0, 1.0) if origin_pois else 0.0,
+            lat=origin_pt[0], lng=origin_pt[1],
+            live_events=origin_live_events,
+            live_incidents=len(origin_live_incidents),
+            moon_illumination=origin_moon,
+            city_name=origin_city or "",
+        )
+        # Apply CIA with forecast decay for this hour
+        h_cia = compute_citizen_adjustment(
+            target_lat=origin_pt[0], target_lng=origin_pt[1],
+            citizen_incidents=origin_citizen,
+            current_hour=hour,
+            target_hour=h,
+        )
+        s_idx = max(5, s_idx - int(round(h_cia)))
+        risk_val = 100 - s_idx
+        risk_values.append(risk_val)
+        hourly_risk.append(HourlyRisk(hour=format_hour(h), risk=risk_val))
+
+    # Peak / safest 4-hour window
+    window_size = 4
+    extended = risk_values + risk_values
+    max_sum, peak_start = -1, 0
+    min_sum, safe_start = 99999, 0
+    for i in range(24):
+        w_sum = sum(extended[i:i + window_size])
+        if w_sum > max_sum:
+            max_sum, peak_start = w_sum, i
+        if w_sum < min_sum:
+            min_sum, safe_start = w_sum, i
+
+    def hour_range_label(start_h: int) -> str:
+        end_h = (start_h + window_size - 1) % 24
+        def fmt(h):
+            if h == 0: return "12 AM"
+            elif h < 12: return f"{h} AM"
+            elif h == 12: return "12 PM"
+            else: return f"{h-12} PM"
+        return f"{fmt(start_h % 24)} – {fmt(end_h)}"
+
+    time_analysis = TimeAnalysis(
+        currentRisk=risk_values[hour],
+        peakHours=hour_range_label(peak_start),
+        safestHours=hour_range_label(safe_start),
+    )
+
+    return RouteResponse(
+        overallSafety=overall,
+        riskLevel=overall_risk,
+        segments=segments,
+        polyline=points,
+        warnings=warnings,
+        estimatedDuration=directions.get("duration", "Unknown"),
+        estimatedDistance=directions.get("distance", "Unknown"),
+        incidentTypes=incident_types,
+        timeAnalysis=time_analysis,
+        hourlyRisk=hourly_risk,
+        dataSources=data_sources,
+    )
+
+
+# ─────────────────────────── Historical Trends ──────────────────
+
+@app.get("/api/historical")
+async def get_historical(state: str = "", lat: float = 0.0, lng: float = 0.0):
+    """Get historical crime trends for the state."""
+    if state:
+        state_abbr = state.upper()
+    elif lat and lng:
+        state_abbr = await fetch_state_from_coords(lat, lng)
+    else:
+        raise HTTPException(status_code=400, detail="Provide 'state' or 'lat'+'lng' query params")
+    data = await fetch_fbi_historical(state_abbr)
+
+    if not data:
+        return {"state": state_abbr, "data": [], "trend": "unknown"}
+
+    # Determine trend
+    if len(data) >= 3:
+        recent = np.mean([d["ratePerCapita"] for d in data[-3:]])
+        earlier = np.mean([d["ratePerCapita"] for d in data[:3]])
+        if recent < earlier * 0.95:
+            trend = "decreasing"
+        elif recent > earlier * 1.05:
+            trend = "increasing"
+        else:
+            trend = "stable"
+    else:
+        trend = "unknown"
+
+    return {"state": state_abbr, "data": data, "trend": trend}
+
+
+# ─────────────────────────── Nearby POIs ────────────────────────
+
+@app.get("/api/nearby-pois")
+async def get_nearby_pois(lat: float, lng: float):
+    """Get nearby safety-relevant points of interest."""
+    pois = await fetch_nearby_pois(lat, lng)
+    return {"pois": pois}
+
+
+# ─────────────────────────── User Reports ───────────────────────
+
+@app.post("/api/reports", response_model=UserReportResponse)
+async def submit_user_report(report: UserReport):
+    """Submit a user safety report."""
+    report_id = str(uuid.uuid4())[:8]
+    user_reports.append({
+        "id": report_id,
+        "lat": report.lat,
+        "lng": report.lng,
+        "category": report.category,
+        "description": report.description,
+        "severity": report.severity,
+        "timestamp": datetime.utcnow().isoformat(),
+    })
+    # Keep only last 1000 reports
+    if len(user_reports) > 1000:
+        user_reports.pop(0)
+
+    logger.info(f"User report submitted: {report.category} at ({report.lat:.4f}, {report.lng:.4f})")
+    return UserReportResponse(id=report_id, status="submitted")
+
+
+@app.get("/api/reports")
+async def get_user_reports(lat: float, lng: float, radius: float = 0.05):
+    """Get user-submitted reports near a location."""
+    nearby = []
+    for r in user_reports:
+        if abs(r["lat"] - lat) < radius and abs(r["lng"] - lng) < radius:
+            nearby.append(r)
+    return {"reports": nearby}
+
+
+# ─────────────────────────── Utility Endpoints ──────────────────
+
+@app.get("/api/health")
+async def health():
+    return {"status": "ok", "model": "xgboost", "version": "4.0.0"}
+
+
+@app.get("/api/geocode")
+async def geocode(query: str):
+    try:
+        r = await client.get(
+            "https://maps.googleapis.com/maps/api/geocode/json",
+            params={"address": query, "key": GOOGLE_MAPS_API_KEY},
+        )
+        if r.status_code == 200:
+            data = r.json()
+            if data.get("status") == "OK" and data.get("results"):
+                loc = data["results"][0]["geometry"]["location"]
+                return {
+                    "lat": loc["lat"],
+                    "lng": loc["lng"],
+                    "name": data["results"][0]["formatted_address"],
+                }
+    except Exception as e:
+        logger.warning(f"Geocode error: {e}")
+    raise HTTPException(status_code=404, detail="Location not found")
+
+
+# ─────────────────────────── Citizen Hotspots ────────────────────
+
+@app.get("/api/citizen-hotspots")
+async def get_citizen_hotspots(
+    lowerLatitude: float,
+    lowerLongitude: float,
+    upperLatitude: float,
+    upperLongitude: float,
+    limit: int = 200,
+):
+    """Proxy the unofficial Citizen trending-incidents API and normalise to HeatmapPoint[]."""
+    try:
+        r = await client.get(
+            "https://citizen.com/api/incident/trending",
+            params={
+                "lowerLatitude": lowerLatitude,
+                "lowerLongitude": lowerLongitude,
+                "upperLatitude": upperLatitude,
+                "upperLongitude": upperLongitude,
+                "fullResponse": "true",
+                "limit": limit,
+            },
+            timeout=10.0,
+        )
+        if r.status_code != 200:
+            logger.warning(f"Citizen API returned {r.status_code}")
+            return {"incidents": []}
+
+        data = r.json()
+        now_ms = time.time() * 1000
+        cutoff_ms = now_ms - 24 * 60 * 60 * 1000
+
+        incidents = []
+        for item in data.get("results", []):
+            ts = item.get("ts", 0)
+            if ts < cutoff_ms:
+                continue
+            lat = item.get("latitude")
+            lng = item.get("longitude")
+            if lat is None or lng is None:
+                continue
+            level = item.get("level", 1)
+            incidents.append({
+                "lat": lat,
+                "lng": lng,
+                "weight": max(level, 1) / 5.0,
+                "type": item.get("title", "Incident"),
+            })
+        return {"incidents": incidents}
+    except Exception as e:
+        logger.warning(f"Citizen hotspots error: {e}")
+        return {"incidents": []}
+
+
+@app.get("/api/autocomplete")
+async def autocomplete(query: str):
+    try:
+        r = await client.post(
+            "https://places.googleapis.com/v1/places:autocomplete",
+            headers={
+                "Content-Type": "application/json",
+                "X-Goog-Api-Key": GOOGLE_MAPS_API_KEY,
+            },
+            json={
+                "input": query,
+                "languageCode": "en",
+            },
+        )
+        if r.status_code == 200:
+            data = r.json()
+            suggestions = []
+            for s in data.get("suggestions", []):
+                place = s.get("placePrediction", {})
+                suggestions.append({
+                    "description": place.get("text", {}).get("text", ""),
+                    "placeId": place.get("placeId", ""),
+                })
+            return {"suggestions": suggestions[:5]}
+    except Exception as e:
+        logger.warning(f"Autocomplete error: {e}")
+    return {"suggestions": []}
+
+
+# ─────────────────────────── AI Safety Tips (Gemini Proxy) ──────────────────────────
+
+@app.post("/api/ai-tips")
+async def ai_safety_tips(req: AISafetyTipsRequest):
+    """Generate AI safety tips via Gemini, keeping the API key server-side."""
+    if not GEMINI_API_KEY:
+        return {"tips": _fallback_tips(req.safetyIndex, req.incidentTypes)}
+
+    try:
+        import google.generativeai as genai
+        genai.configure(api_key=GEMINI_API_KEY)
+        model = genai.GenerativeModel("gemini-2.5-flash")
+
+        prompt = f"""You are a public safety advisor AI. Given the following travel context, provide exactly 4 concise, actionable safety tips. Be helpful, not fear-inducing.
+
+Location: {req.locationName}
+Safety Index: {req.safetyIndex}/100 ({
+    'generally safe' if req.safetyIndex >= 70 else 'moderate risk' if req.safetyIndex >= 40 else 'high risk'
+})
+Common incidents nearby: {', '.join(req.incidentTypes) if req.incidentTypes else 'none reported'}
+Traveling at: {req.timeOfTravel}
+Group size: {req.peopleCount} {'person' if req.peopleCount == 1 else 'people'}
+Gender: {req.gender}
+
+Return ONLY valid JSON — no markdown, no code fences:
+[
+  {{"title": "short title", "description": "1-2 sentence actionable tip", "priority": "high|medium|low"}},
+  ...
+]"""
+
+        result = model.generate_content(
+            prompt,
+            generation_config=genai.types.GenerationConfig(
+                response_mime_type="application/json",
+            ),
+        )
+        text = result.text.strip()
+        import json
+        
+        # Robustly extract JSON list array if wrapped in markdown or extra text
+        start_idx = text.find('[')
+        end_idx = text.rfind(']')
+        if start_idx != -1 and end_idx != -1:
+            text = text[start_idx:end_idx+1]
+            
+        tips = json.loads(text)
+        return {"tips": tips[:4]}
+
+    except Exception as e:
+        logger.warning(f"Gemini AI tips error: {e}")
+        return {"tips": _fallback_tips(req.safetyIndex, req.incidentTypes)}
+
+
+def _fallback_tips(safety_index: float, incident_types: list[str]) -> list[dict]:
+    tips = [
+        {"title": "Stay Aware of Surroundings", "description": "Keep your head up, phone away, and maintain awareness especially in unfamiliar areas.", "priority": "high"},
+        {"title": "Share Your Location", "description": "Let someone you trust know your travel plans and share live location via your phone.", "priority": "medium"},
+    ]
+    if safety_index < 50:
+        tips.append({"title": "Travel in Groups", "description": "This area has elevated risk. Traveling with others significantly reduces vulnerability.", "priority": "high"})
+    if any("theft" in t.lower() for t in incident_types):
+        tips.append({"title": "Secure Valuables", "description": "Keep bags zipped and close to your body. Avoid displaying expensive devices openly.", "priority": "medium"})
+    if any("vehicle" in t.lower() or "auto" in t.lower() for t in incident_types):
+        tips.append({"title": "Vehicle Safety", "description": "Don't leave valuables visible in your car. Park in well-lit, populated areas.", "priority": "medium"})
+    if len(tips) < 4:
+        tips.append({"title": "Know Emergency Exits", "description": "Identify nearby safe locations like police stations, hospitals, or well-lit businesses.", "priority": "low"})
+    return tips[:4]

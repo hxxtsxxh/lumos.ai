@@ -1,0 +1,467 @@
+You are implementing a complete ML pipeline rework for the Lumos safety scoring backend. This is a full implementation — not a plan, not a suggestion. Write all the code, make all the edits, and ensure the server runs cleanly when done.
+
+Read LUMOS_ML_REWORK_ANALYSIS.md first for full architectural context. Then implement everything below in one pass.
+
+═══════════════════════════════════════════════════════════════════
+GOAL: Replace the broken circular-training Keras Dense NN with a
+three-component ensemble (pre-computed temporal profiles + agency-
+level spatial matching + XGBoost contextual scorer) trained on
+NIBRS-derived ground truth from all 51 states' real incident data.
+═══════════════════════════════════════════════════════════════════
+
+CURRENT STATE OF THE CODEBASE (read each file fully before editing):
+- backend/ml_model.py (986 lines) — Keras NN training + _ModelProxy + safety_model singleton
+- backend/scoring.py (842 lines) — compute_safety_score() with 85/15 formula/ML blend
+- backend/nibrs_data.py (892 lines) — GA-only NIBRS loader + BJS synthetic curves for other states
+- backend/routes.py (1014 lines) — FastAPI endpoints, startup event, /api/safety
+- backend/config.py (98 lines) — FEATURE_NAMES (15 old features), API keys
+- backend/models.py (141 lines) — Pydantic schemas (SafetyRequest, SafetyResponse, etc.)
+- backend/requirements.txt — already has xgboost, tensorflow is commented out
+- safety_model.keras — old Keras model file (DELETE this)
+- datasets/ — 774 state-year directories with NIBRS CSVs (~58M incidents, 48GB)
+
+═══════════════════════════════════════════════════════════════════
+PHASE 1: CREATE backend/precompute_nibrs.py (NEW FILE)
+═══════════════════════════════════════════════════════════════════
+
+Create a standalone script that streams ALL 51 states' NIBRS CSVs and produces two JSON artifacts:
+
+1. datasets/agency_profiles.json — Per-agency crime statistics (~15K agencies)
+2. datasets/state_temporal_profiles.json — Per-state temporal distributions (51 states)
+
+The script MUST:
+- Scan datasets/ for all directories matching pattern [A-Z]{2}-\d{4}
+- For each state-year directory that contains NIBRS_incident.csv:
+  a) Stream NIBRS_incident.csv row-by-row (csv.DictReader, NOT pandas)
+     - Normalize column names to UPPERCASE (handles all 3 format generations)
+     - Count incidents per (agency_id, hour) → hourly_counts
+     - Parse incident_date → count per (agency_id, day_of_week) and (agency_id, month)
+     - Track total incidents per agency_id
+  b) Stream agencies.csv
+     - Build agency_id → {pub_agency_name, population, county_name, state_abbr, agency_type_name, population_group_code, male_officer, female_officer}
+     - Deduplicate: keep record with highest population per agency_id
+  c) Stream NIBRS_OFFENSE.csv
+     - Resolve offense_code from OFFENSE_CODE column (2020+) or OFFENSE_TYPE_ID column (pre-2020) using NIBRS_OFFENSE_TYPE.csv lookup
+     - Track Part I offense counts per agency (using _PART_I_OFFENSE_CODES set from current nibrs_data.py)
+     - Count offense_code distribution per agency (offense mix)
+     - Track severity-weighted offense counts
+  d) Stream NIBRS_WEAPON.csv
+     - Count offenses with weapons per agency (via offense_id → incident_id → agency_id join)
+  e) Stream NIBRS_VICTIM.csv
+     - Count victim sex_code (M/F) per agency
+     - Track victim ages per agency
+  f) Stream NIBRS_VICTIM_OFFENDER_REL.csv (if exists)
+     - Count stranger/unknown relationships per agency
+
+- After processing all directories, for each agency with ≥50 total incidents:
+  Compute and save to agency_profiles.json:
+    {
+      "agency_name_lower": {
+        "agency_id": str,
+        "name": str,
+        "state_abbr": str,
+        "county": str,
+        "population": int,
+        "population_group": int,
+        "agency_type": str,
+        "n_years": int,
+        "total_incidents": int,
+        "latest_year": int,
+        "part1_rate": float,        // annual Part I per 100K
+        "violent_rate": float,      // annual violent Part I per 100K
+        "property_rate": float,     // annual property Part I per 100K
+        "total_rate": float,        // all offenses annual per 100K
+        "weapon_rate": float,       // fraction of offenses with weapons
+        "stranger_rate": float,     // fraction stranger/unknown relationships
+        "victim_female_rate": float,
+        "victim_male_rate": float,
+        "mean_victim_age": float,
+        "officers_per_1000": float,
+        "severity_score": float,    // severity-weighted average
+        "offense_mix": {offense_code: fraction, ...},
+        "hourly_dist": [24 floats],  // normalized
+        "dow_dist": [7 floats],      // normalized
+        "monthly_dist": [12 floats]  // normalized
+      }
+    }
+
+- Aggregate all agencies per state into state_temporal_profiles.json:
+    {
+      "GA": {
+        "hourly_dist": [24 floats],
+        "dow_dist": [7 floats],
+        "monthly_dist": [12 floats],
+        "total_incidents": int,
+        "n_agencies": int,
+        "weapon_rate": float,
+        "stranger_rate": float,
+        "victim_gender_rates": {"M": float, "F": float},
+        "crime_against_distribution": {"Person": float, "Property": float, "Society": float}
+      },
+      ...
+    }
+
+- Memory management: NEVER load an entire CSV into memory. Use streaming csv.DictReader. Process one state-year directory at a time and accumulate into dictionaries keyed by agency_id.
+
+- Date parsing: Handle formats "DD-Mon-YY HH:MI:SS" (e.g. "15-JAN-18 12:00:00"), "YYYY-MM-DD", "MM/DD/YYYY". Use try/except with multiple format attempts.
+
+- Schema normalization: Uppercase all CSV column names. Handle missing DATA_YEAR by inferring from directory name. Handle OFFENSE_TYPE_ID (numeric, pre-2020) vs OFFENSE_CODE (string, 2020+).
+
+- Progress logging: Print progress every 10 directories processed.
+
+- Make it runnable: `python backend/precompute_nibrs.py` from project root. Include __main__ block.
+
+- After computing profiles, also compute the offense_type lookup table from NIBRS_OFFENSE_TYPE.csv and save it into the state_temporal_profiles.json under key "offense_type_lookup".
+
+═══════════════════════════════════════════════════════════════════
+PHASE 2: CREATE backend/train_safety_model.py (NEW FILE)
+═══════════════════════════════════════════════════════════════════
+
+Create a training script that:
+1. Loads agency_profiles.json
+2. Generates training data with NIBRS-derived ground truth labels (NOT formula-derived)
+3. Trains an XGBoost regressor
+4. Saves the model to backend/safety_model_xgb.ubj
+
+Ground truth label generation (THIS IS CRITICAL — must NOT use the old formula):
+  For each agency with sufficient data:
+    base_safety = 1.0 - percentile_rank(agency.part1_rate, all_agency_rates)
+    For each (hour, day_of_week) combination (sample strategically, not all 24×7):
+      hourly_risk_ratio = agency.hourly_dist[hour] / mean(agency.hourly_dist)
+      dow_risk_ratio = agency.dow_dist[dow] / mean(agency.dow_dist)
+      temporal_modifier = hourly_risk_ratio * dow_risk_ratio
+      For each (gender, group_size) variation:
+        Apply weapon_rate, stranger_rate, officer_density adjustments
+        Label = clip(base_safety / temporal_modifier * contextual_adjustments, 0.05, 0.95)
+
+Feature vector (25 features) — MUST match inference order exactly:
+  FEATURE_NAMES_V2 = [
+    "agency_part1_rate",
+    "agency_violent_rate",
+    "agency_property_rate",
+    "agency_weapon_rate",
+    "agency_stranger_rate",
+    "agency_severity_score",
+    "state_crime_rate_norm",
+    "population_group",
+    "hourly_risk_ratio",
+    "dow_risk_ratio",
+    "monthly_risk_ratio",
+    "time_sin",
+    "time_cos",
+    "is_weekend",
+    "people_count_norm",
+    "gender_factor",
+    "weather_severity",
+    "officer_density",
+    "is_college",
+    "is_urban",
+    "poi_density",
+    "live_events_norm",
+    "live_incidents_norm",
+    "moon_illumination",
+    "spatial_density_score",
+  ]
+
+XGBoost config:
+  objective="reg:squarederror", max_depth=8, learning_rate=0.05,
+  n_estimators=500, subsample=0.8, colsample_bytree=0.8,
+  reg_alpha=0.1, reg_lambda=1.0, min_child_weight=5,
+  early_stopping_rounds=20, tree_method="hist"
+
+Split: 80/10/10 stratified by state.
+Print MAE, RMSE, and accuracy@10 on test set.
+Save model to backend/safety_model_xgb.ubj
+Save training metadata to datasets/training_metadata.json
+
+═══════════════════════════════════════════════════════════════════
+PHASE 3: REWRITE backend/nibrs_data.py
+═══════════════════════════════════════════════════════════════════
+
+Replace the entire file. The new version must:
+
+1. On startup (initialize_nibrs), load the PRE-COMPUTED JSON artifacts:
+   - datasets/agency_profiles.json → self.agency_profiles dict
+   - datasets/state_temporal_profiles.json → self.state_profiles dict
+   This should take <5 seconds, not 30+ minutes of CSV streaming.
+
+2. Keep a graceful fallback: if JSON files don't exist, log a warning and set self.loaded = False. The server should still start (with degraded accuracy).
+
+3. Provide these public methods (used by scoring.py and routes.py):
+
+   get_state_crime_profile(state_abbr, fbi_data, nibrs_detail) → dict
+     NOW returns REAL NIBRS-derived profiles for ALL 51 states (not just GA).
+     Falls back to derive_state_profile() only if a state is missing from
+     the pre-computed data.
+
+   get_agency_profile(city_name, state_abbr) → dict or None
+     Multi-tier fuzzy matching:
+       Tier 1: Exact match on city_name.lower() in agency_profiles
+       Tier 2: Substring match (city_lower in key or key in city_lower)
+       Tier 3: Match agencies in same county
+       Tier 4: Return None (caller falls back to state median)
+
+   get_hourly_risk_curve(state_abbr, base_risk) → np.ndarray(24,)
+     Uses REAL per-state hourly distribution from state_temporal_profiles.
+     No more BJS synthetic fallback for any state that has NIBRS data.
+
+   get_agency_crime_rate(city_name) → dict or None
+     Same as before but now searches ALL states' agencies, not just GA.
+
+4. Keep the existing NIBRSStatistics class interface for backward compatibility,
+   but load from JSON instead of raw CSVs.
+
+5. Keep derive_state_profile() and get_state_crime_profile() functions but update
+   get_state_crime_profile() to check state_temporal_profiles FIRST before falling
+   back to the BJS-derived derivation.
+
+6. Keep the BJS hourly arrays (_BJS_VIOLENT, etc.) as ultimate fallback only.
+
+7. Keep _PART_I_OFFENSE_CODES, _OFFENSE_SEVERITY_OVERRIDES, _CRIME_AGAINST_WEIGHT
+   — these are still used by derive_state_profile() and the precompute script.
+
+8. The nibrs_stats singleton and initialize_nibrs() function must still exist
+   with the same names (routes.py imports them).
+
+═══════════════════════════════════════════════════════════════════
+PHASE 4: REWRITE backend/ml_model.py
+═══════════════════════════════════════════════════════════════════
+
+Replace the entire file. The new version must:
+
+1. Remove ALL TensorFlow/Keras dependencies. No import tensorflow anywhere.
+
+2. Load the XGBoost model from backend/safety_model_xgb.ubj at first use
+   (lazy loading via _ModelProxy pattern, same as before).
+
+3. The safety_model singleton must still exist (routes.py imports it).
+
+4. The predict() method signature: predict(X) where X is np.ndarray of shape (n, 25).
+   Returns np.ndarray of shape (n, 1) with safety scores in [0, 1].
+
+5. Provide a _FallbackModel that returns 0.65 * np.ones((n, 1)) when XGBoost
+   model file doesn't exist. This ensures the server starts even without training.
+
+6. Remove these functions entirely (they are dead code in the new pipeline):
+   - _load_fbi_cde_records()
+   - _load_hardcoded_records()
+   - _load_ucr_records()
+   - _load_preprocessed_cities()
+   - _load_ga_nibrs_hourly()
+   - _compute_percentile_safety()
+   - _load_pregenerated_vectors()
+   - _generate_training_data()
+   - _fallback_synthetic_data()
+   - _train_neural_network()
+   - load_or_train_model()
+
+7. New file should be ~100-150 lines (down from 986).
+
+8. Update FEATURE_NAMES to FEATURE_NAMES_V2 (the 25-feature list from Phase 2).
+   Export it so config.py and scoring.py can import it.
+
+═══════════════════════════════════════════════════════════════════
+PHASE 5: REWRITE backend/scoring.py — compute_safety_score()
+═══════════════════════════════════════════════════════════════════
+
+Replace compute_safety_score() with a new implementation that:
+
+1. DOES NOT use the old 85/15 formula/ML blend. The formula is GONE.
+
+2. New flow:
+   a) Look up the agency profile for this city via nibrs_stats.get_agency_profile()
+   b) If found: use real agency-level crime rates, temporal profiles, weapon rates, etc.
+   c) If not found: fall back to state-level crime rate from fbi_data
+   d) Compute hourly_risk_ratio, dow_risk_ratio, monthly_risk_ratio from NIBRS profiles
+   e) Build the 25-feature vector (MUST match training feature order exactly)
+   f) Run XGBoost prediction → raw_score (0-1)
+   g) Scale to safety_index = int(raw_score * 100), clamped to [5, 95]
+   h) Return (safety_index, raw_score)
+
+3. The function signature changes (ADD agency_profile parameter, keep backward compat):
+   compute_safety_score(
+       crime_rate_per_100k, hour, people_count, gender, weather_severity,
+       population, city_incidents, tf_model,  # tf_model is now xgb_model
+       duration_minutes=60, state_abbr="", crime_profile=None,
+       is_college=0.0, is_urban=0.0, is_weekend=0.0, poi_density=0.0,
+       lat=0.0, lng=0.0, live_events=0, live_incidents=0,
+       moon_illumination=0.5, city_name=""  # NEW param
+   ) -> tuple[int, float]
+
+4. Keep the LRU cache for ML predictions (same pattern as before).
+
+5. Update estimate_local_crime_rate() to use agency profiles for ALL states:
+   - Priority 1: NIBRS agency-level data for ANY state (not just GA)
+   - Priority 2: FBI UCR per-city/college data (unchanged)
+   - Priority 3: State rate × multiplier (unchanged fallback)
+
+6. Keep ALL other functions unchanged:
+   - get_icon()
+   - compute_heatmap_from_incidents()
+   - get_emergency_numbers()
+   - build_incident_types()
+   - generate_synthetic_heatmap()
+   - gemini_refine_score()
+   - gemini_enrich_heatmap()
+   - classify_risk_from_score()
+   - update_incident_crime_level()
+   - _classify_crime_level()
+
+═══════════════════════════════════════════════════════════════════
+PHASE 6: UPDATE backend/config.py
+═══════════════════════════════════════════════════════════════════
+
+1. Replace FEATURE_NAMES (15 old features) with FEATURE_NAMES_V2 (25 features):
+   FEATURE_NAMES = [
+       "agency_part1_rate", "agency_violent_rate", "agency_property_rate",
+       "agency_weapon_rate", "agency_stranger_rate", "agency_severity_score",
+       "state_crime_rate_norm", "population_group",
+       "hourly_risk_ratio", "dow_risk_ratio", "monthly_risk_ratio",
+       "time_sin", "time_cos", "is_weekend",
+       "people_count_norm", "gender_factor", "weather_severity",
+       "officer_density", "is_college", "is_urban", "poi_density",
+       "live_events_norm", "live_incidents_norm", "moon_illumination",
+       "spatial_density_score",
+   ]
+
+2. Remove the comment "# TensorFlow feature names" — rename to "# ML feature names (XGBoost v2)"
+
+3. Keep everything else unchanged (API keys, ICON_MAP, emergency numbers, etc.)
+
+═══════════════════════════════════════════════════════════════════
+PHASE 7: UPDATE backend/routes.py
+═══════════════════════════════════════════════════════════════════
+
+1. In startup_event():
+   - Remove the ensure_training_data_exists() call (no longer needed)
+   - Keep initialize_nibrs() (it now loads JSON artifacts)
+   - Change the log message from "Keras NN model will load on first prediction"
+     to "XGBoost model will load on first prediction"
+
+2. In get_safety_data() endpoint:
+   - After estimate_local_crime_rate(), add: pass city_name= to compute_safety_score()
+   - The call to compute_safety_score() stays the same except add city_name=city
+
+3. In the 24-hour risk loop:
+   - Same change: add city_name=city to compute_safety_score() calls
+
+4. In get_route_safety() endpoint (if it calls compute_safety_score):
+   - Same change: add city_name= parameter
+
+5. Remove the import of safety_model from ml_model IF it's no longer
+   passed directly. Actually — keep it: safety_model is still passed as
+   tf_model parameter to compute_safety_score(). The parameter name is
+   misleading but changing it throughout is fine.
+
+═══════════════════════════════════════════════════════════════════
+PHASE 8: CLEANUP
+═══════════════════════════════════════════════════════════════════
+
+1. DELETE backend/safety_model.keras (old Keras model file) — use terminal: rm backend/safety_model.keras
+
+2. In backend/requirements.txt:
+   - Ensure xgboost is listed (it already is)
+   - Ensure tensorflow line stays commented out
+   - Keep everything else
+
+3. Verify NO file imports tensorflow or keras anywhere.
+
+4. Run: cd backend && python -c "from config import FEATURE_NAMES; print(len(FEATURE_NAMES), 'features')"
+   Expected output: "25 features"
+
+5. Run: cd backend && python -c "from ml_model import safety_model; import numpy as np; X = np.random.rand(1, 25).astype(np.float32); print(safety_model.predict(X))"
+   Should work without error (returns fallback 0.65 if model not trained yet).
+
+6. Run: cd backend && python -c "from nibrs_data import initialize_nibrs; initialize_nibrs()"
+   Should load JSON profiles (or warn if they don't exist yet).
+
+═══════════════════════════════════════════════════════════════════
+PHASE 9: RUN PREPROCESSING (after all code changes)
+═══════════════════════════════════════════════════════════════════
+
+1. Run: cd backend && python precompute_nibrs.py
+   This will take 10-30 minutes to process 48GB of CSVs.
+   Wait for it to complete. It will produce:
+   - datasets/agency_profiles.json
+   - datasets/state_temporal_profiles.json
+
+2. After preprocessing completes, run: cd backend && python train_safety_model.py
+   This trains the XGBoost model on the pre-computed profiles.
+   Expected output: MAE, RMSE, accuracy metrics.
+   It will produce: backend/safety_model_xgb.ubj
+
+3. Start the server: cd backend && python -m uvicorn main:app --port 8000
+   Verify it starts without errors.
+
+═══════════════════════════════════════════════════════════════════
+CRITICAL CONSTRAINTS
+═══════════════════════════════════════════════════════════════════
+
+- The /api/safety endpoint response schema (SafetyResponse) MUST NOT change.
+  Frontend expects: safetyIndex, riskLevel, incidentTypes, timeAnalysis,
+  dataSources, hourlyRisk, heatmapPoints, emergencyNumbers, nearbyPOIs.
+
+- The /api/route endpoint MUST still work.
+
+- All Gemini integration (gemini_refine_score, gemini_enrich_heatmap) stays UNCHANGED.
+
+- The heatmap generation (generate_synthetic_heatmap, compute_heatmap_from_incidents)
+  stays UNCHANGED.
+
+- build_incident_types() stays UNCHANGED.
+
+- The nibrs_stats singleton name and initialize_nibrs() function name MUST NOT change.
+
+- The safety_model singleton name MUST NOT change (routes.py imports it).
+
+- estimate_local_crime_rate() in scoring.py now checks ALL states' agency profiles
+  (not just GA). The nibrs_stats.get_agency_crime_rate() method should search all
+  agencies, not just Georgia.
+
+- For both precompute_nibrs.py and train_safety_model.py, handle the case where
+  datasets/ directory is at the project root (../datasets relative to backend/).
+
+- Use numpy only where needed. Prefer plain Python dicts/lists for JSON serialization.
+
+- All file paths should use pathlib.Path for cross-platform compatibility.
+
+- DO NOT create any new markdown documentation files. Just code.
+
+═══════════════════════════════════════════════════════════════════
+FILE EDIT SUMMARY
+═══════════════════════════════════════════════════════════════════
+
+CREATE (new files):
+  1. backend/precompute_nibrs.py — NIBRS preprocessing pipeline
+  2. backend/train_safety_model.py — XGBoost training script
+
+REWRITE (replace entire contents):
+  3. backend/ml_model.py — XGBoost loader, ~100-150 lines (was 986)
+  4. backend/nibrs_data.py — JSON-loading NIBRS pipeline (was 892 lines of GA-only CSV loading)
+
+EDIT (targeted changes):
+  5. backend/config.py — Replace FEATURE_NAMES list (15 → 25 features)
+  6. backend/scoring.py — Rewrite compute_safety_score() + update estimate_local_crime_rate()
+  7. backend/routes.py — Update startup, add city_name param to scoring calls
+
+DELETE:
+  8. backend/safety_model.keras — old Keras model
+
+═══════════════════════════════════════════════════════════════════
+EXECUTION ORDER
+═══════════════════════════════════════════════════════════════════
+
+1. Read LUMOS_ML_REWORK_ANALYSIS.md for full context
+2. Read all 7 backend files cover-to-cover
+3. Create backend/precompute_nibrs.py
+4. Create backend/train_safety_model.py
+5. Rewrite backend/ml_model.py
+6. Rewrite backend/nibrs_data.py
+7. Edit backend/config.py
+8. Edit backend/scoring.py (compute_safety_score + estimate_local_crime_rate)
+9. Edit backend/routes.py (startup + safety endpoint + route endpoint)
+10. Delete safety_model.keras
+11. Run validation checks (Phase 8 items 4-6)
+12. Run precompute_nibrs.py
+13. Run train_safety_model.py
+14. Start server + verify no errors
