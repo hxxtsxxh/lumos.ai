@@ -1142,6 +1142,24 @@ const Index = () => {
                         </button>
                       );
                     })}
+                    {citizenIncidents && citizenIncidents.length > 0 && (
+                      <button
+                        onClick={toggleCitizenHeatmap}
+                        className={`flex flex-col items-center gap-0.5 sm:gap-1 px-2 sm:px-3 py-1.5 sm:py-2 rounded-xl transition-all duration-200 min-w-[48px] ${
+                          showCitizenHeatmap
+                            ? 'bg-purple-500/20 text-purple-400 scale-105'
+                            : 'text-muted-foreground hover:text-foreground hover:bg-secondary/50 active:bg-secondary/70'
+                        }`}
+                        aria-label="Toggle live incidents"
+                        aria-pressed={showCitizenHeatmap}
+                        title={`${citizenIncidents.length} live incidents nearby`}
+                      >
+                        <Radio className="w-4 h-4 sm:w-5 sm:h-5" />
+                        <span className={`text-[9px] sm:text-[10px] font-medium leading-none ${showCitizenHeatmap ? 'text-purple-400' : ''}`}>
+                          Live
+                        </span>
+                      </button>
+                    )}
                   </div>
                 </div>
 
@@ -1291,6 +1309,24 @@ const Index = () => {
                           </button>
                         );
                       })}
+                      {citizenIncidents && citizenIncidents.length > 0 && (
+                        <button
+                          onClick={toggleCitizenHeatmap}
+                          className={`flex flex-col items-center gap-0.5 px-2 py-1.5 rounded-xl transition-all duration-200 min-w-[48px] ${
+                            showCitizenHeatmap
+                              ? 'bg-purple-500/20 text-purple-400 scale-105'
+                              : 'text-muted-foreground hover:text-foreground active:bg-secondary/70'
+                          }`}
+                          aria-label="Toggle live incidents"
+                          aria-pressed={showCitizenHeatmap}
+                          title={`${citizenIncidents.length} live incidents nearby`}
+                        >
+                          <Radio className="w-4 h-4" />
+                          <span className={`text-[9px] font-medium leading-none ${showCitizenHeatmap ? 'text-purple-400' : ''}`}>
+                            Live
+                          </span>
+                        </button>
+                      )}
                     </div>
                   </div>
 
