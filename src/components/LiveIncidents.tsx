@@ -106,7 +106,7 @@ const LiveIncidents = ({ incidents, expanded: externalExpanded, onSelectIncident
 
             {/* Pagination */}
             {totalPages > 1 && (
-              <div className="flex items-center justify-between pt-2 border-t border-border/30">
+              <div className="flex items-center justify-between pt-2 pb-14 sm:pb-0 border-t border-border/30">
                 <button
                   onClick={() => setPage((p) => Math.max(0, p - 1))}
                   disabled={page === 0}
