@@ -321,3 +321,25 @@ export async function sendSafetyChatMessage(payload: {
   if (!res.ok) throw new Error(`Chat request failed: ${res.status}`);
   return res.json();
 }
+
+// ─── Lazy heatmap enrichment (Gemini descriptions) ───
+export async function fetchHeatmapDetails(
+  incidentTypes: string[],
+  cityName: string,
+  stateAbbr: string,
+  crimeRate: number,
+  hour: number,
+): Promise<Record<string, string>> {
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/safety/heatmap-details`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ incidentTypes, cityName, stateAbbr, crimeRate, hour }),
+    });
+    if (!res.ok) return {};
+    const data = await res.json();
+    return data.descriptions || {};
+  } catch {
+    return {};
+  }
+}

@@ -26,7 +26,7 @@ from cache import (
 logger = logging.getLogger("lumos.fetchers")
 
 # Shared async HTTP client
-client = httpx.AsyncClient(timeout=15.0)
+client = httpx.AsyncClient(timeout=8.0)
 
 
 # ─────────────────────────── FBI CDE ────────────────────────────

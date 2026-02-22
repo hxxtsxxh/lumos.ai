@@ -5,6 +5,7 @@ import math
 import logging
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import numpy as np
 from fastapi import FastAPI, HTTPException, Request
@@ -50,6 +51,32 @@ logger = logging.getLogger("lumos")
 async def _noop_dict() -> dict:
     """Async no-op returning empty dict, for use in asyncio.gather when a fetch should be skipped."""
     return {}
+
+
+_thread_pool = ThreadPoolExecutor(max_workers=4)
+
+_WEATHER_DEFAULT = {
+    "alert_count": 0, "max_severity": 0.0,
+    "owm_condition": "Clear", "owm_description": "", "owm_icon": "01d",
+    "temp_celsius": None, "humidity": None, "wind_speed": None,
+}
+
+
+async def _fetch_state_and_deps(lat: float, lng: float):
+    """Fetch state abbreviation, then FBI + NIBRS data in parallel.
+
+    By bundling the state lookup with its dependents, the state network call
+    runs concurrently with all non-state-dependent fetches in the outer gather.
+    """
+    state = await fetch_state_from_coords(lat, lng)
+    if state:
+        fbi, nibrs = await asyncio.gather(
+            fetch_fbi_crime_data(state),
+            fetch_fbi_nibrs_detail(state),
+        )
+    else:
+        fbi, nibrs = {}, {}
+    return state, fbi, nibrs
 
 
 # ─────────────────────────── App Setup ──────────────────────────
@@ -142,21 +169,41 @@ async def get_safety_data(req: SafetyRequest):
 
     logger.info(f"Safety request: {city} ({req.lat:.4f}, {req.lng:.4f})")
 
-    state_abbr = await fetch_state_from_coords(req.lat, req.lng)
-
-    fbi_data, city_crime_result, weather, population, country_code, pois, nibrs_detail, live_events, live_incidents, moon_illumination, citizen_incidents = await asyncio.gather(
-        fetch_fbi_crime_data(state_abbr),
+    _results = await asyncio.gather(
+        _fetch_state_and_deps(req.lat, req.lng),
         fetch_city_crime_data(req.lat, req.lng, city),
         fetch_nws_weather(req.lat, req.lng),
         fetch_census_population(req.lat, req.lng),
         fetch_country_from_coords(req.lat, req.lng),
         fetch_nearby_pois(req.lat, req.lng),
-        fetch_fbi_nibrs_detail(state_abbr) if state_abbr else _noop_dict(),
         fetch_local_events(req.lat, req.lng),
         fetch_live_incidents(req.lat, req.lng),
         fetch_moon_illumination(req.lat, req.lng),
         fetch_citizen_incidents(req.lat, req.lng),
+        return_exceptions=True,
     )
+
+    _defaults = [
+        ("", {}, {}),
+        {"incidents": [], "total_annual_count": 0},
+        _WEATHER_DEFAULT,
+        0, "US", [], 0, [], 0.5, [],
+    ]
+    for i, r in enumerate(_results):
+        if isinstance(r, Exception):
+            logger.warning(f"Safety fetch #{i} failed: {r}")
+            _results[i] = _defaults[i]
+
+    state_abbr, fbi_data, nibrs_detail = _results[0]
+    city_crime_result = _results[1]
+    weather = _results[2]
+    population = _results[3]
+    country_code = _results[4]
+    pois = _results[5]
+    live_events = _results[6]
+    live_incidents = _results[7]
+    moon_illumination = _results[8]
+    citizen_incidents = _results[9]
 
     city_incidents = city_crime_result.get("incidents", [])
     total_annual_crime = city_crime_result.get("total_annual_count", len(city_incidents))
@@ -325,30 +372,59 @@ async def get_safety_data(req: SafetyRequest):
         _live_summary_parts.append(", ".join(parts))
     live_incident_summary = "; ".join(_live_summary_parts[:12]) if _live_summary_parts else ""
 
-    # ── Gemini refinement layer (now with live incident context) ──
-    safety_index = await gemini_refine_score(
-        safety_index,
-        city_name=city,
-        state_abbr=state_abbr,
-        hour=hour,
-        crime_rate=crime_rate_per_100k,
-        weather_condition=weather.get("owm_condition", "Clear"),
-        weather_severity=weather.get("max_severity", 0.0),
-        people_count=req.peopleCount,
-        gender=req.gender,
-        incident_types=[it.type for it in incident_types[:5]],
-        live_incident_summary=live_incident_summary,
-        live_incident_count=len(_unified_incidents),
-    )
-    risk_level = "safe" if safety_index >= 70 else "caution" if safety_index >= 40 else "danger"
+    # ── Run Gemini refinement concurrently with 24-hour risk curve ──
+    _weather_sev = weather.get("max_severity", 0.0)
+    _n_live_incidents = len(live_incidents)
 
-    # Update crime level tags to match the FINAL safety score (ML + Gemini)
+    def _compute_24h_risk_values():
+        values = []
+        for h in range(24):
+            s_idx, _ = compute_safety_score(
+                crime_rate_per_100k, h, req.peopleCount, req.gender,
+                _weather_sev, population, city_incidents, safety_model,
+                duration_minutes=req.duration, state_abbr=state_abbr, crime_profile=crime_profile,
+                is_college=is_college, is_urban=is_urban, is_weekend=is_weekend,
+                poi_density=poi_density,
+                lat=req.lat, lng=req.lng,
+                live_events=live_events, live_incidents=_total_live,
+                moon_illumination=moon_illumination,
+                city_name=city,
+            )
+            h_penalty = compute_live_incident_penalty(
+                target_lat=req.lat,
+                target_lng=req.lng,
+                all_incidents=_unified_incidents,
+                current_hour=hour,
+                target_hour=h,
+            )
+            s_idx = max(5, s_idx - int(round(h_penalty)))
+            values.append(100 - s_idx)
+        return values
+
+    loop = asyncio.get_event_loop()
+    refined_score, risk_values = await asyncio.gather(
+        gemini_refine_score(
+            safety_index,
+            city_name=city,
+            state_abbr=state_abbr,
+            hour=hour,
+            crime_rate=crime_rate_per_100k,
+            weather_condition=weather.get("owm_condition", "Clear"),
+            weather_severity=_weather_sev,
+            people_count=req.peopleCount,
+            gender=req.gender,
+            incident_types=[it.type for it in incident_types[:5]],
+            live_incident_summary=live_incident_summary,
+            live_incident_count=len(_unified_incidents),
+        ),
+        loop.run_in_executor(_thread_pool, _compute_24h_risk_values),
+    )
+
+    safety_index = refined_score
+    risk_level = "safe" if safety_index >= 70 else "caution" if safety_index >= 40 else "danger"
     update_incident_crime_level(incident_types, safety_index)
 
-    # Compute a true 24-hour trace utilizing the full dimension set (ML natively shifts peak)
-    hourly_risk = []
-    risk_values = []
-    
+    # ── Build hourly risk chart ──
     def format_hour(start_h):
         h = start_h % 24
         if h == 0: return "12a"
@@ -356,47 +432,17 @@ async def get_safety_data(req: SafetyRequest):
         elif h == 12: return "12p"
         else: return f"{h-12}p"
 
-    for h in range(24):
-        h_is_after_sunset = 1.0 if (h >= 18 or h < 6) else 0.0
-        s_idx, _ = compute_safety_score(
-            crime_rate_per_100k, h, req.peopleCount, req.gender,
-            weather.get("max_severity", 0.0), population, city_incidents, safety_model,
-            duration_minutes=req.duration, state_abbr=state_abbr, crime_profile=crime_profile,
-            is_college=is_college, is_urban=is_urban, is_weekend=is_weekend,
-            poi_density=poi_density,
-            lat=req.lat, lng=req.lng,
-            live_events=live_events, live_incidents=_total_live,
-            moon_illumination=moon_illumination,
-            city_name=city,
-        )
-        h_penalty = compute_live_incident_penalty(
-            target_lat=req.lat,
-            target_lng=req.lng,
-            all_incidents=_unified_incidents,
-            current_hour=hour,
-            target_hour=h,
-        )
-        s_idx = max(5, s_idx - int(round(h_penalty)))
-        risk_val = 100 - s_idx
-        risk_values.append(risk_val)
-
-    # ── Amplify temporal contrast ──
-    # The ML model produces modest hour-to-hour swings (typically 10-17 pts).
-    # Amplify deviations from the 24-hour mean by ~2.5× so the chart clearly
-    # shows the day/night swing while keeping the mean risk truthful.
     mean_risk = sum(risk_values) / 24
     TEMPORAL_AMP = 2.5
     amplified = [
         max(5, min(95, round(mean_risk + (r - mean_risk) * TEMPORAL_AMP)))
         for r in risk_values
     ]
-    for h in range(24):
-        hourly_risk.append({"hour": format_hour(h), "risk": amplified[h]})
+    hourly_risk = [{"hour": format_hour(h), "risk": amplified[h]} for h in range(24)]
 
-    # Sliding 4-hour window for truly dynamic Peak/Safest extraction
     window_size = 4
     extended = risk_values + risk_values
-    
+
     max_sum = -1
     peak_start = 0
     for i in range(24):
@@ -404,7 +450,7 @@ async def get_safety_data(req: SafetyRequest):
         if w_sum > max_sum:
             max_sum = w_sum
             peak_start = i
-            
+
     min_sum = 99999
     safe_start = 0
     for i in range(24):
@@ -433,7 +479,6 @@ async def get_safety_data(req: SafetyRequest):
 
     emergency_numbers = get_emergency_numbers(state_abbr, city, country_code)
 
-    # Include nearby user reports in heatmap
     for report in user_reports:
         dlat = abs(report["lat"] - req.lat)
         dlng = abs(report["lng"] - req.lng)
@@ -445,17 +490,6 @@ async def get_safety_data(req: SafetyRequest):
                 "type": report.get("category", "User Report"),
                 "source": "User Report",
             })
-
-    # ── Gemini heatmap enrichment (adds contextual descriptions to hover) ──
-    heatmap_points = await gemini_enrich_heatmap(
-        heatmap_points,
-        city_name=city,
-        state_abbr=state_abbr,
-        crime_rate=crime_rate_per_100k,
-        hour=hour,
-        incident_types=incident_types,
-        live_incident_summary=live_incident_summary,
-    )
 
     nearby_pois = [NearbyPOI(**p) for p in pois]
 
@@ -551,6 +585,39 @@ async def get_safety_data(req: SafetyRequest):
         sentimentSummary=sentiment_summary,
         neighborhoodContext=neighborhood_context,
     )
+
+
+# ──────────────── Lazy Heatmap Enrichment (Gemini) ──────────────
+
+
+class _HeatmapDetailsRequest(BaseModel):
+    incidentTypes: list[str]
+    cityName: str = ""
+    stateAbbr: str = ""
+    crimeRate: float = 0.0
+    hour: int = 12
+
+
+@app.post("/api/safety/heatmap-details")
+async def get_heatmap_details(req: _HeatmapDetailsRequest):
+    """Return Gemini-generated descriptions for incident types.
+
+    Called lazily by the frontend after the main safety score renders,
+    so the user sees data immediately without waiting for this LLM call.
+    """
+    if not req.incidentTypes:
+        return {"descriptions": {}}
+
+    dummy_points = [{"lat": 0, "lng": 0, "weight": 1.0, "type": t} for t in req.incidentTypes]
+    enriched = await gemini_enrich_heatmap(
+        dummy_points,
+        city_name=req.cityName,
+        state_abbr=req.stateAbbr,
+        crime_rate=req.crimeRate,
+        hour=req.hour,
+    )
+    descriptions = {p["type"]: p["description"] for p in enriched if p.get("description")}
+    return {"descriptions": descriptions}
 
 
 # ─────────────────────────── Route Analysis ─────────────────────

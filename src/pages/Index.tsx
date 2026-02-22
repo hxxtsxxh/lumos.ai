@@ -23,7 +23,7 @@ import WalkWithMe from '@/components/WalkWithMe';
 import LiveIncidents from '@/components/LiveIncidents';
 import SafetyChatWidget from '@/components/SafetyChatWidget';
 import { EmergencyCallModal } from '@/components/EmergencyCallModal';
-import { geocodeLocation, fetchSafetyScore, fetchRouteAnalysis, fetchCitizenHotspots, type FullSafetyResponse, type HeatmapPoint } from '@/lib/api';
+import { geocodeLocation, fetchSafetyScore, fetchRouteAnalysis, fetchCitizenHotspots, fetchHeatmapDetails, type FullSafetyResponse, type HeatmapPoint } from '@/lib/api';
 import { useTheme } from '@/hooks/useTheme';
 import {
   addCrimeHeatmap,
@@ -397,6 +397,47 @@ const Index = () => {
           } else {
             map.once('style.load', addLayersWhenReady);
           }
+        }
+
+        // Lazy heatmap enrichment — fetch Gemini descriptions after initial render
+        const uniqueTypes = [...new Set(
+          (data.heatmapPoints || []).map((p: HeatmapPoint) => p.type).filter(Boolean) as string[]
+        )];
+        if (uniqueTypes.length > 0) {
+          const hrMatch = travelParams.timeOfTravel?.match(/^(\d+)/);
+          const hr = hrMatch ? parseInt(hrMatch[1], 10) : 12;
+          fetchHeatmapDetails(uniqueTypes, name, stateMatch?.[1] ?? '', 0, hr).then((descriptions) => {
+            if (Object.keys(descriptions).length === 0) return;
+            setSafetyData(prev => {
+              if (!prev) return prev;
+              return {
+                ...prev,
+                heatmapPoints: prev.heatmapPoints.map(p => ({
+                  ...p,
+                  description: descriptions[p.type || ''] || p.description || '',
+                })),
+              };
+            });
+            const map = mapRef.current;
+            if (map) {
+              try {
+                const src = map.getSource('crime-heatmap') as mapboxgl.GeoJSONSource | undefined;
+                if (src) {
+                  const enrichedFeatures = (data.heatmapPoints || []).map((p: HeatmapPoint) => ({
+                    type: 'Feature' as const,
+                    geometry: { type: 'Point' as const, coordinates: [p.lng, p.lat] },
+                    properties: {
+                      weight: p.weight,
+                      type: p.type || 'Unknown Incident',
+                      description: descriptions[p.type || ''] || '',
+                      date: (p as { date?: string }).date || '',
+                    },
+                  }));
+                  src.setData({ type: 'FeatureCollection', features: enrichedFeatures });
+                }
+              } catch { /* map may have been destroyed */ }
+            }
+          });
         }
 
         // Fetch Citizen live incidents (non-blocking)
