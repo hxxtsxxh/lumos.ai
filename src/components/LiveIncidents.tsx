@@ -106,7 +106,7 @@ const LiveIncidents = ({ incidents, expanded: externalExpanded, onSelectIncident
 
             {/* Pagination */}
             {totalPages > 1 && (
-              <div className="flex items-center justify-between pt-2 pb-14 sm:pb-0 border-t border-border/30">
+              <div className="flex items-center justify-center gap-2 pt-2 pb-14 sm:pb-0 border-t border-border/30">
                 <button
                   onClick={() => setPage((p) => Math.max(0, p - 1))}
                   disabled={page === 0}
@@ -116,9 +116,6 @@ const LiveIncidents = ({ incidents, expanded: externalExpanded, onSelectIncident
                   <ChevronLeft className="w-3.5 h-3.5" />
                   Prev
                 </button>
-                <span className="text-[10px] sm:text-xs text-muted-foreground tabular-nums">
-                  {start}–{end} of {sorted.length}
-                </span>
                 <button
                   onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
                   disabled={page >= totalPages - 1}
@@ -128,6 +125,9 @@ const LiveIncidents = ({ incidents, expanded: externalExpanded, onSelectIncident
                   Next
                   <ChevronRight className="w-3.5 h-3.5" />
                 </button>
+                <span className="text-[10px] sm:text-xs text-muted-foreground tabular-nums">
+                  {start}–{end} of {sorted.length}
+                </span>
               </div>
             )}
           </div>
