@@ -7,8 +7,11 @@ import time
 import uuid
 from datetime import datetime
 import numpy as np
+from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from config import GOOGLE_MAPS_API_KEY, GEMINI_API_KEY
@@ -56,6 +59,13 @@ async def _noop_dict() -> dict:
 app = FastAPI(title="Lumos Safety API", version="3.0.0")
 
 _allowed_origins = [
+    "https://lumosai.surge.sh",
+    "http://lumosai.surge.sh",
+    "https://lumos-ai.live",
+    "http://lumos-ai.live",
+    "https://www.lumos-ai.live",
+    "https://lumos-safety.netlify.app",
+] + [
     f"http://localhost:{p}" for p in range(3000, 3010)
 ] + [
     f"http://localhost:{p}" for p in range(5173, 5180)
@@ -1023,7 +1033,7 @@ async def ai_safety_tips(req: AISafetyTipsRequest):
     try:
         import google.generativeai as genai
         genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel("gemini-2.0-flash")
+        model = genai.GenerativeModel("gemini-2.5-flash")
 
         prompt = f"""You are a public safety advisor AI. Given the following travel context, provide exactly 4 concise, actionable safety tips. Be helpful, not fear-inducing.
 
@@ -1127,7 +1137,7 @@ Guidelines:
 - Format responses in plain text (no markdown)."""
 
         model = genai.GenerativeModel(
-            "gemini-2.0-flash",
+            "gemini-2.5-flash",
             system_instruction=system_prompt,
         )
 
@@ -1153,3 +1163,17 @@ Guidelines:
             "reply": "I'm having trouble connecting right now. For immediate safety concerns, please call 911 or your local emergency number.",
             "error": "fallback",
         }
+
+
+# ─────────────── Serve Frontend SPA (must be last) ──────────────
+
+_static_dir = Path(__file__).resolve().parent / "static"
+if _static_dir.is_dir():
+    app.mount("/assets", StaticFiles(directory=str(_static_dir / "assets")), name="assets")
+
+    @app.get("/{full_path:path}")
+    async def serve_spa(full_path: str):
+        file = _static_dir / full_path
+        if file.is_file():
+            return FileResponse(file)
+        return FileResponse(_static_dir / "index.html")

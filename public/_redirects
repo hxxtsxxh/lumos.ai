@@ -1,0 +1,2 @@
+/api/*  https://lumos-ai.live/api/:splat  200
+/*      /index.html   200

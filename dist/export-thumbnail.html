@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Lumos Thumbnail Export</title>
+  <style>
+    body { margin: 0; background: #111; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; font-family: sans-serif; color: #ccc; }
+    img { max-width: 90vw; border: 1px solid #333; }
+    button { margin-top: 20px; padding: 12px 32px; background: hsl(38, 92%, 55%); color: #111; border: none; border-radius: 8px; font-size: 16px; font-weight: 600; cursor: pointer; }
+    button:hover { background: hsl(38, 100%, 65%); }
+    p { margin-top: 10px; font-size: 14px; opacity: 0.6; }
+  </style>
+</head>
+<body>
+  <h2>Lumos DevPost Thumbnail Preview</h2>
+  <img id="preview" src="devpost-thumbnail.svg" width="800" />
+  <button onclick="downloadPNG()">Download as PNG (1600×900)</button>
+  <p>Click the button to save as a PNG file</p>
+
+  <script>
+    function downloadPNG() {
+      const canvas = document.createElement('canvas');
+      canvas.width = 1600;
+      canvas.height = 900;
+      const ctx = canvas.getContext('2d');
+      const img = new Image();
+      img.onload = () => {
+        ctx.drawImage(img, 0, 0, 1600, 900);
+        const link = document.createElement('a');
+        link.download = 'lumos-devpost-thumbnail.png';
+        link.href = canvas.toDataURL('image/png');
+        link.click();
+      };
+      img.src = 'devpost-thumbnail.svg';
+    }
+  </script>
+</body>
+</html>

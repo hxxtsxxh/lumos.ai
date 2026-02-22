@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
+  <!-- Dark background shield -->
+  <path d="M24 4L6 12V24C6 35.1 14.04 45.26 24 48C33.96 45.26 42 35.1 42 24V12L24 4Z" fill="#0a0e1a" stroke="#d4952a" stroke-width="2"/>
+  <!-- Light burst outer glow -->
+  <circle cx="24" cy="22" r="8" fill="#d4952a" opacity="0.3"/>
+  <!-- Light burst core -->
+  <circle cx="24" cy="22" r="6" fill="#d4952a" opacity="0.9"/>
+  <circle cx="24" cy="22" r="3" fill="#f5d491"/>
+  <!-- Rays -->
+  <line x1="24" y1="11" x2="24" y2="14" stroke="#d4952a" stroke-width="2" stroke-linecap="round"/>
+  <line x1="24" y1="30" x2="24" y2="33" stroke="#d4952a" stroke-width="2" stroke-linecap="round"/>
+  <line x1="14" y1="22" x2="17" y2="22" stroke="#d4952a" stroke-width="2" stroke-linecap="round"/>
+  <line x1="31" y1="22" x2="34" y2="22" stroke="#d4952a" stroke-width="2" stroke-linecap="round"/>
+  <!-- Diagonal rays -->
+  <line x1="16.9" y1="14.9" x2="19.1" y2="17.1" stroke="#d4952a" stroke-width="1.5" stroke-linecap="round"/>
+  <line x1="28.9" y1="26.9" x2="31.1" y2="29.1" stroke="#d4952a" stroke-width="1.5" stroke-linecap="round"/>
+  <line x1="31.1" y1="14.9" x2="28.9" y2="17.1" stroke="#d4952a" stroke-width="1.5" stroke-linecap="round"/>
+  <line x1="19.1" y1="26.9" x2="16.9" y2="29.1" stroke="#d4952a" stroke-width="1.5" stroke-linecap="round"/>
+  <!-- Teal accent dot -->
+  <circle cx="24" cy="38" r="2.5" fill="#2fb8a0"/>
+</svg>

@@ -236,6 +236,7 @@ const Index = () => {
     const popup = new mapboxgl.Popup({
       closeButton: false,
       closeOnClick: false,
+      maxWidth: '320px',
       className: 'heatmap-popup'
     });
 
@@ -256,7 +257,7 @@ const Index = () => {
       const riskColor = weight > 0.6 ? '#ef4444' : weight > 0.3 ? '#f59e0b' : '#22c55e';
 
       const descHtml = description
-        ? `<div style="font-size: 12px; color: hsl(var(--muted-foreground)); margin-top: 4px; line-height: 1.4; max-width: 240px;">${description}</div>`
+        ? `<div style="font-size: 12px; color: hsl(var(--muted-foreground)); margin-top: 4px; line-height: 1.4; word-wrap: break-word;">${description}</div>`
         : '';
 
       const dateHtml = date
@@ -298,6 +299,7 @@ const Index = () => {
     const citizenPopup = new mapboxgl.Popup({
       closeButton: false,
       closeOnClick: false,
+      maxWidth: '320px',
       className: 'heatmap-popup',
     });
 
