@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <a href="https://lumos-ai.live"><img src="https://img.shields.io/badge/🌐_LIVE_DEMO-lumos--ai.live-FFD700?style=for-the-badge&labelColor=0d1117" alt="Live Demo"/></a>
+  <a href="https://lumos-safety.netlify.app"><img src="https://img.shields.io/badge/🌐_LIVE_DEMO-lumos-safety.netlify.app-FFD700?style=for-the-badge&labelColor=0d1117" alt="Live Demo"/></a>
   <a href="#-quick-start"><img src="https://img.shields.io/badge/⚡_GET_STARTED-5_Minutes-00D4AA?style=for-the-badge&labelColor=0d1117" alt="Quick Start"/></a>
 </p>
 
@@ -645,7 +645,7 @@ User ──text──▶ Firebase RTDB ──▶ Cloud Function
 </tr>
 <tr>
 <td><b>🚀 Deploy</b></td>
-<td>Frontend: <a href="https://lumos-ai.live">lumos-ai.live</a> · Backend: uvicorn · Functions: Firebase Cloud Run</td>
+<td>Frontend: <a href="https://lumos-safety.netlify.app">lumos-safety.netlify.app</a> · Backend: uvicorn · Functions: Firebase Cloud Run</td>
 </tr>
 </table>
 
@@ -934,7 +934,7 @@ Tests use **Vitest** + **React Testing Library** + **jsdom**.
 
 | Component | Platform | URL |
 |:---------:|:--------:|:---:|
-| Frontend | Surge / Vite Build | [lumos-ai.live](https://lumos-ai.live) |
+| Frontend | Surge / Vite Build | [lumos-safety.netlify.app](https://lumos-safety.netlify.app) |
 | Backend | uvicorn | Port 8000 |
 | Functions | Firebase Cloud Run | Auto-deployed |
 
