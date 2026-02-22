@@ -1,0 +1,142 @@
+[debug] [2026-02-22T02:20:42.031Z] ----------------------------------------------------------------------
+[debug] [2026-02-22T02:20:42.037Z] Command:       /opt/homebrew/Cellar/node/25.2.1/bin/node /opt/homebrew/bin/firebase deploy --only functions
+[debug] [2026-02-22T02:20:42.038Z] CLI Version:   15.6.0
+[debug] [2026-02-22T02:20:42.038Z] Platform:      darwin
+[debug] [2026-02-22T02:20:42.038Z] Node Version:  v25.2.1
+[debug] [2026-02-22T02:20:42.038Z] Time:          Sat Feb 21 2026 21:20:42 GMT-0500 (Eastern Standard Time)
+[debug] [2026-02-22T02:20:42.038Z] ----------------------------------------------------------------------
+[debug] 
+[debug] [2026-02-22T02:20:42.983Z] Object "/database" in "firebase.json" has unknown property: {"additionalProperty":"instance"}
+[debug] [2026-02-22T02:20:42.984Z] Field "/database" in "firebase.json" is possibly invalid: must be array
+[debug] [2026-02-22T02:20:42.984Z] Field "/database" in "firebase.json" is possibly invalid: must match a schema in anyOf
+[debug] [2026-02-22T02:20:42.986Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-02-22T02:20:42.986Z] > authorizing via signed-in user (heettshahh@gmail.com)
+[debug] [2026-02-22T02:20:42.986Z] [iam] checking project lumos-b2c23 for permissions ["cloudfunctions.functions.create","cloudfunctions.functions.delete","cloudfunctions.functions.get","cloudfunctions.functions.list","cloudfunctions.functions.update","cloudfunctions.operations.get","firebase.projects.get"]
+[debug] [2026-02-22T02:20:42.986Z] Checked if tokens are valid: false, expires at: 1771715376177
+[debug] [2026-02-22T02:20:42.987Z] Checked if tokens are valid: false, expires at: 1771715376177
+[debug] [2026-02-22T02:20:42.987Z] > refreshing access token with scopes: []
+[debug] [2026-02-22T02:20:42.987Z] >>> [apiv2][query] POST https://www.googleapis.com/oauth2/v3/token [none]
+[debug] [2026-02-22T02:20:42.987Z] >>> [apiv2][body] POST https://www.googleapis.com/oauth2/v3/token [omitted]
+[debug] [2026-02-22T02:20:43.090Z] <<< [apiv2][status] POST https://www.googleapis.com/oauth2/v3/token 200
+[debug] [2026-02-22T02:20:43.090Z] <<< [apiv2][body] POST https://www.googleapis.com/oauth2/v3/token [omitted]
+[debug] [2026-02-22T02:20:43.100Z] >>> [apiv2][query] POST https://cloudresourcemanager.googleapis.com/v1/projects/lumos-b2c23:testIamPermissions [none]
+[debug] [2026-02-22T02:20:43.100Z] >>> [apiv2][(partial)header] POST https://cloudresourcemanager.googleapis.com/v1/projects/lumos-b2c23:testIamPermissions  x-goog-user-project=lumos-b2c23
+[debug] [2026-02-22T02:20:43.100Z] >>> [apiv2][body] POST https://cloudresourcemanager.googleapis.com/v1/projects/lumos-b2c23:testIamPermissions {"permissions":["cloudfunctions.functions.create","cloudfunctions.functions.delete","cloudfunctions.functions.get","cloudfunctions.functions.list","cloudfunctions.functions.update","cloudfunctions.operations.get","firebase.projects.get"]}
+[debug] [2026-02-22T02:20:43.179Z] <<< [apiv2][status] POST https://cloudresourcemanager.googleapis.com/v1/projects/lumos-b2c23:testIamPermissions 200
+[debug] [2026-02-22T02:20:43.179Z] <<< [apiv2][body] POST https://cloudresourcemanager.googleapis.com/v1/projects/lumos-b2c23:testIamPermissions {"permissions":["cloudfunctions.functions.create","cloudfunctions.functions.delete","cloudfunctions.functions.get","cloudfunctions.functions.list","cloudfunctions.functions.update","cloudfunctions.operations.get","firebase.projects.get"]}
+[debug] [2026-02-22T02:20:43.179Z] Checked if tokens are valid: true, expires at: 1771730442090
+[debug] [2026-02-22T02:20:43.179Z] Checked if tokens are valid: true, expires at: 1771730442090
+[debug] [2026-02-22T02:20:43.179Z] >>> [apiv2][query] POST https://iam.googleapis.com/v1/projects/lumos-b2c23/serviceAccounts/lumos-b2c23@appspot.gserviceaccount.com:testIamPermissions [none]
+[debug] [2026-02-22T02:20:43.179Z] >>> [apiv2][body] POST https://iam.googleapis.com/v1/projects/lumos-b2c23/serviceAccounts/lumos-b2c23@appspot.gserviceaccount.com:testIamPermissions {"permissions":["iam.serviceAccounts.actAs"]}
+[debug] [2026-02-22T02:20:43.648Z] <<< [apiv2][status] POST https://iam.googleapis.com/v1/projects/lumos-b2c23/serviceAccounts/lumos-b2c23@appspot.gserviceaccount.com:testIamPermissions 404
+[debug] [2026-02-22T02:20:43.648Z] <<< [apiv2][body] POST https://iam.googleapis.com/v1/projects/lumos-b2c23/serviceAccounts/lumos-b2c23@appspot.gserviceaccount.com:testIamPermissions {"error":{"code":404,"message":"Unknown service account","status":"NOT_FOUND"}}
+[debug] [2026-02-22T02:20:43.649Z] [functions] service account IAM check errored, deploy may fail: Request to https://iam.googleapis.com/v1/projects/lumos-b2c23/serviceAccounts/lumos-b2c23@appspot.gserviceaccount.com:testIamPermissions had HTTP Error: 404, Unknown service account {"name":"FirebaseError","children":[],"context":{"body":{"error":{"code":404,"message":"Unknown service account","status":"NOT_FOUND"}},"response":{"statusCode":404}},"exit":1,"message":"Request to https://iam.googleapis.com/v1/projects/lumos-b2c23/serviceAccounts/lumos-b2c23@appspot.gserviceaccount.com:testIamPermissions had HTTP Error: 404, Unknown service account","status":404}
+[info] 
+[info] === Deploying to 'lumos-b2c23'...
+[info] 
+[info] i  deploying functions 
+[debug] [2026-02-22T02:20:43.650Z] Checked if tokens are valid: true, expires at: 1771730442090
+[debug] [2026-02-22T02:20:43.650Z] Checked if tokens are valid: true, expires at: 1771730442090
+[debug] [2026-02-22T02:20:43.650Z] >>> [apiv2][query] GET https://serviceusage.googleapis.com/v1/projects/lumos-b2c23/services/cloudresourcemanager.googleapis.com [none]
+[debug] [2026-02-22T02:20:43.650Z] >>> [apiv2][(partial)header] GET https://serviceusage.googleapis.com/v1/projects/lumos-b2c23/services/cloudresourcemanager.googleapis.com  x-goog-user-project=lumos-b2c23
+[debug] [2026-02-22T02:20:47.116Z] <<< [apiv2][status] GET https://serviceusage.googleapis.com/v1/projects/lumos-b2c23/services/cloudresourcemanager.googleapis.com 200
+[debug] [2026-02-22T02:20:47.117Z] <<< [apiv2][body] GET https://serviceusage.googleapis.com/v1/projects/lumos-b2c23/services/cloudresourcemanager.googleapis.com [omitted]
+[debug] [2026-02-22T02:20:47.122Z] Checked if tokens are valid: true, expires at: 1771730442090
+[debug] [2026-02-22T02:20:47.122Z] Checked if tokens are valid: true, expires at: 1771730442090
+[debug] [2026-02-22T02:20:47.122Z] >>> [apiv2][query] GET https://cloudresourcemanager.googleapis.com/v1/projects/lumos-b2c23 [none]
+[debug] [2026-02-22T02:20:47.203Z] <<< [apiv2][status] GET https://cloudresourcemanager.googleapis.com/v1/projects/lumos-b2c23 200
+[debug] [2026-02-22T02:20:47.203Z] <<< [apiv2][body] GET https://cloudresourcemanager.googleapis.com/v1/projects/lumos-b2c23 {"projectNumber":"432465756081","projectId":"lumos-b2c23","lifecycleState":"ACTIVE","name":"lumos","labels":{"firebase":"enabled","firebase-core":"disabled"},"createTime":"2026-02-18T23:41:04.633432Z"}
+[info] i  functions: preparing codebase default for deployment 
+[info] i  functions: ensuring required API cloudfunctions.googleapis.com is enabled... 
+[debug] [2026-02-22T02:20:47.204Z] Checked if tokens are valid: true, expires at: 1771730442090
+[debug] [2026-02-22T02:20:47.204Z] Checked if tokens are valid: true, expires at: 1771730442090
+[debug] [2026-02-22T02:20:47.204Z] Checked if tokens are valid: true, expires at: 1771730442090
+[debug] [2026-02-22T02:20:47.204Z] Checked if tokens are valid: true, expires at: 1771730442090
+[info] i  functions: ensuring required API cloudbuild.googleapis.com is enabled... 
+[debug] [2026-02-22T02:20:47.204Z] Checked if tokens are valid: true, expires at: 1771730442090
+[debug] [2026-02-22T02:20:47.204Z] Checked if tokens are valid: true, expires at: 1771730442090
+[info] i  artifactregistry: ensuring required API artifactregistry.googleapis.com is enabled... 
+[debug] [2026-02-22T02:20:47.204Z] Checked if tokens are valid: true, expires at: 1771730442090
+[debug] [2026-02-22T02:20:47.204Z] Checked if tokens are valid: true, expires at: 1771730442090
+[debug] [2026-02-22T02:20:47.204Z] >>> [apiv2][query] GET https://serviceusage.googleapis.com/v1/projects/lumos-b2c23/services/cloudfunctions.googleapis.com [none]
+[debug] [2026-02-22T02:20:47.204Z] >>> [apiv2][(partial)header] GET https://serviceusage.googleapis.com/v1/projects/lumos-b2c23/services/cloudfunctions.googleapis.com  x-goog-user-project=lumos-b2c23
+[debug] [2026-02-22T02:20:47.204Z] >>> [apiv2][query] GET https://serviceusage.googleapis.com/v1/projects/lumos-b2c23/services/runtimeconfig.googleapis.com [none]
+[debug] [2026-02-22T02:20:47.204Z] >>> [apiv2][(partial)header] GET https://serviceusage.googleapis.com/v1/projects/lumos-b2c23/services/runtimeconfig.googleapis.com  x-goog-user-project=lumos-b2c23
+[debug] [2026-02-22T02:20:47.206Z] >>> [apiv2][query] GET https://serviceusage.googleapis.com/v1/projects/lumos-b2c23/services/cloudbuild.googleapis.com [none]
+[debug] [2026-02-22T02:20:47.206Z] >>> [apiv2][(partial)header] GET https://serviceusage.googleapis.com/v1/projects/lumos-b2c23/services/cloudbuild.googleapis.com  x-goog-user-project=lumos-b2c23
+[debug] [2026-02-22T02:20:47.207Z] >>> [apiv2][query] GET https://serviceusage.googleapis.com/v1/projects/lumos-b2c23/services/artifactregistry.googleapis.com [none]
+[debug] [2026-02-22T02:20:47.207Z] >>> [apiv2][(partial)header] GET https://serviceusage.googleapis.com/v1/projects/lumos-b2c23/services/artifactregistry.googleapis.com  x-goog-user-project=lumos-b2c23
+[debug] [2026-02-22T02:20:47.442Z] <<< [apiv2][status] GET https://serviceusage.googleapis.com/v1/projects/lumos-b2c23/services/cloudfunctions.googleapis.com 200
+[debug] [2026-02-22T02:20:47.443Z] <<< [apiv2][body] GET https://serviceusage.googleapis.com/v1/projects/lumos-b2c23/services/cloudfunctions.googleapis.com [omitted]
+[info] ✔  functions: required API cloudfunctions.googleapis.com is enabled 
+[debug] [2026-02-22T02:20:47.456Z] <<< [apiv2][status] GET https://serviceusage.googleapis.com/v1/projects/lumos-b2c23/services/artifactregistry.googleapis.com 200
+[debug] [2026-02-22T02:20:47.456Z] <<< [apiv2][body] GET https://serviceusage.googleapis.com/v1/projects/lumos-b2c23/services/artifactregistry.googleapis.com [omitted]
+[info] ✔  artifactregistry: required API artifactregistry.googleapis.com is enabled 
+[debug] [2026-02-22T02:20:47.490Z] <<< [apiv2][status] GET https://serviceusage.googleapis.com/v1/projects/lumos-b2c23/services/runtimeconfig.googleapis.com 200
+[debug] [2026-02-22T02:20:47.490Z] <<< [apiv2][body] GET https://serviceusage.googleapis.com/v1/projects/lumos-b2c23/services/runtimeconfig.googleapis.com [omitted]
+[debug] [2026-02-22T02:20:47.504Z] <<< [apiv2][status] GET https://serviceusage.googleapis.com/v1/projects/lumos-b2c23/services/cloudbuild.googleapis.com 200
+[debug] [2026-02-22T02:20:47.504Z] <<< [apiv2][body] GET https://serviceusage.googleapis.com/v1/projects/lumos-b2c23/services/cloudbuild.googleapis.com [omitted]
+[info] ✔  functions: required API cloudbuild.googleapis.com is enabled 
+[debug] [2026-02-22T02:20:47.508Z] Checked if tokens are valid: true, expires at: 1771730442090
+[debug] [2026-02-22T02:20:47.508Z] Checked if tokens are valid: true, expires at: 1771730442090
+[debug] [2026-02-22T02:20:47.508Z] >>> [apiv2][query] GET https://firebase.googleapis.com/v1beta1/projects/lumos-b2c23/adminSdkConfig [none]
+[debug] [2026-02-22T02:20:47.720Z] <<< [apiv2][status] GET https://firebase.googleapis.com/v1beta1/projects/lumos-b2c23/adminSdkConfig 200
+[debug] [2026-02-22T02:20:47.720Z] <<< [apiv2][body] GET https://firebase.googleapis.com/v1beta1/projects/lumos-b2c23/adminSdkConfig {"projectId":"lumos-b2c23","storageBucket":"lumos-b2c23.firebasestorage.app"}
+[debug] [2026-02-22T02:20:47.720Z] Checked if tokens are valid: true, expires at: 1771730442090
+[debug] [2026-02-22T02:20:47.720Z] Checked if tokens are valid: true, expires at: 1771730442090
+[debug] [2026-02-22T02:20:47.720Z] >>> [apiv2][query] GET https://runtimeconfig.googleapis.com/v1beta1/projects/lumos-b2c23/configs [none]
+[debug] [2026-02-22T02:20:51.078Z] <<< [apiv2][status] GET https://runtimeconfig.googleapis.com/v1beta1/projects/lumos-b2c23/configs 200
+[debug] [2026-02-22T02:20:51.079Z] <<< [apiv2][body] GET https://runtimeconfig.googleapis.com/v1beta1/projects/lumos-b2c23/configs {}
+[debug] [2026-02-22T02:20:51.080Z] Validating nodejs source
+[warn] ⚠  functions: Runtime Node.js 20 will be deprecated on 2026-04-30 and will be decommissioned on 2026-10-30, after which you will not be able to deploy without upgrading. Consider upgrading now to avoid disruption. See https://cloud.google.com/functions/docs/runtime-support for full details on the lifecycle policy 
+[warn] ⚠  functions: package.json indicates an outdated version of firebase-functions. Please upgrade using npm install --save firebase-functions@latest in your functions directory. 
+[warn] ⚠  functions: Please note that there will be breaking changes when you upgrade. 
+[debug] [2026-02-22T02:20:51.694Z] > [functions] package.json contents: {
+  "name": "lumos-functions",
+  "description": "Firebase Cloud Functions for LUMOS emergency call (VAPI + Gemini)",
+  "main": "index.js",
+  "type": "commonjs",
+  "engines": {
+    "node": "20"
+  },
+  "dependencies": {
+    "firebase-admin": "^12.0.0",
+    "firebase-functions": "^5.0.0"
+  }
+}
+[debug] [2026-02-22T02:20:51.695Z] Building nodejs source
+[info] i  functions: Loading and analyzing source code for codebase default to determine what to deploy 
+[debug] [2026-02-22T02:20:51.695Z] Could not find functions.yaml. Must use http discovery
+[debug] [2026-02-22T02:20:51.702Z] Found firebase-functions binary at '/Users/heetshah/Documents/hacklytics2026/lumos.ai/functions/node_modules/.bin/firebase-functions'
+[info] Serving at port 8900
+
+[debug] [2026-02-22T02:20:52.158Z] Got response from /__/functions.yaml {"endpoints":{"vapiLlm":{"availableMemoryMb":null,"timeoutSeconds":60,"minInstances":null,"maxInstances":20,"ingressSettings":null,"concurrency":null,"serviceAccountEmail":null,"vpc":null,"platform":"gcfv2","labels":{},"httpsTrigger":{},"entryPoint":"vapiLlm"},"startEmergencyCall":{"availableMemoryMb":null,"timeoutSeconds":null,"minInstances":null,"maxInstances":20,"ingressSettings":null,"concurrency":null,"serviceAccountEmail":null,"vpc":null,"platform":"gcfv2","labels":{},"callableTrigger":{},"entryPoint":"startEmergencyCall"},"emergencyCallMessage":{"availableMemoryMb":null,"timeoutSeconds":null,"minInstances":null,"maxInstances":20,"ingressSettings":null,"concurrency":null,"serviceAccountEmail":null,"vpc":null,"platform":"gcfv2","labels":{},"callableTrigger":{},"entryPoint":"emergencyCallMessage"},"emergencyCallEnd":{"availableMemoryMb":null,"timeoutSeconds":null,"minInstances":null,"maxInstances":20,"ingressSettings":null,"concurrency":null,"serviceAccountEmail":null,"vpc":null,"platform":"gcfv2","labels":{},"callableTrigger":{},"entryPoint":"emergencyCallEnd"},"vapiWebhook":{"availableMemoryMb":null,"timeoutSeconds":30,"minInstances":null,"maxInstances":20,"ingressSettings":null,"concurrency":null,"serviceAccountEmail":null,"vpc":null,"platform":"gcfv2","labels":{},"httpsTrigger":{},"entryPoint":"vapiWebhook"}},"specVersion":"v1alpha1","requiredAPIs":[],"extensions":{}}
+[info] i  extensions: ensuring required API firebaseextensions.googleapis.com is enabled... 
+[debug] [2026-02-22T02:20:56.174Z] Checked if tokens are valid: true, expires at: 1771730442090
+[debug] [2026-02-22T02:20:56.174Z] Checked if tokens are valid: true, expires at: 1771730442090
+[debug] [2026-02-22T02:20:56.174Z] >>> [apiv2][query] GET https://serviceusage.googleapis.com/v1/projects/lumos-b2c23/services/firebaseextensions.googleapis.com [none]
+[debug] [2026-02-22T02:20:56.174Z] >>> [apiv2][(partial)header] GET https://serviceusage.googleapis.com/v1/projects/lumos-b2c23/services/firebaseextensions.googleapis.com  x-goog-user-project=lumos-b2c23
+[debug] [2026-02-22T02:20:59.555Z] <<< [apiv2][status] GET https://serviceusage.googleapis.com/v1/projects/lumos-b2c23/services/firebaseextensions.googleapis.com 200
+[debug] [2026-02-22T02:20:59.556Z] <<< [apiv2][body] GET https://serviceusage.googleapis.com/v1/projects/lumos-b2c23/services/firebaseextensions.googleapis.com [omitted]
+[info] ✔  extensions: required API firebaseextensions.googleapis.com is enabled 
+[debug] [2026-02-22T02:20:59.562Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-02-22T02:20:59.562Z] > authorizing via signed-in user (heettshahh@gmail.com)
+[debug] [2026-02-22T02:20:59.563Z] [iam] checking project lumos-b2c23 for permissions ["firebase.projects.get","firebaseextensions.instances.list"]
+[debug] [2026-02-22T02:20:59.563Z] Checked if tokens are valid: true, expires at: 1771730442090
+[debug] [2026-02-22T02:20:59.563Z] Checked if tokens are valid: true, expires at: 1771730442090
+[debug] [2026-02-22T02:20:59.563Z] >>> [apiv2][query] POST https://cloudresourcemanager.googleapis.com/v1/projects/lumos-b2c23:testIamPermissions [none]
+[debug] [2026-02-22T02:20:59.563Z] >>> [apiv2][(partial)header] POST https://cloudresourcemanager.googleapis.com/v1/projects/lumos-b2c23:testIamPermissions  x-goog-user-project=lumos-b2c23
+[debug] [2026-02-22T02:20:59.563Z] >>> [apiv2][body] POST https://cloudresourcemanager.googleapis.com/v1/projects/lumos-b2c23:testIamPermissions {"permissions":["firebase.projects.get","firebaseextensions.instances.list"]}
+[debug] [2026-02-22T02:20:59.672Z] <<< [apiv2][status] POST https://cloudresourcemanager.googleapis.com/v1/projects/lumos-b2c23:testIamPermissions 200
+[debug] [2026-02-22T02:20:59.672Z] <<< [apiv2][body] POST https://cloudresourcemanager.googleapis.com/v1/projects/lumos-b2c23:testIamPermissions {"permissions":["firebase.projects.get","firebaseextensions.instances.list"]}
+[debug] [2026-02-22T02:20:59.672Z] Checked if tokens are valid: true, expires at: 1771730442090
+[debug] [2026-02-22T02:20:59.672Z] Checked if tokens are valid: true, expires at: 1771730442090
+[debug] [2026-02-22T02:20:59.672Z] >>> [apiv2][query] GET https://firebaseextensions.googleapis.com/v1beta/projects/lumos-b2c23/instances pageSize=100&pageToken=
+[debug] [2026-02-22T02:21:00.328Z] <<< [apiv2][status] GET https://firebaseextensions.googleapis.com/v1beta/projects/lumos-b2c23/instances 200
+[debug] [2026-02-22T02:21:00.328Z] <<< [apiv2][body] GET https://firebaseextensions.googleapis.com/v1beta/projects/lumos-b2c23/instances {}
+[info] i  functions: Loaded environment variables from .env. 
+[info] i  functions: preparing functions directory for uploading... 
+[info] i  functions: packaged /Users/heetshah/Documents/hacklytics2026/lumos.ai/functions (36.5 KB) for uploading 
+[debug] [2026-02-22T02:21:00.353Z] Checked if tokens are valid: true, expires at: 1771730442090
+[debug] [2026-02-22T02:21:00.353Z] Checked if tokens are valid: true, expires at: 1771730442090
+[debug] [2026-02-22T02:21:00.353Z] >>> [apiv2][query] GET https://cloudfunctions.googleapis.com/v1/projects/lumos-b2c23/locations/-/functions [none]

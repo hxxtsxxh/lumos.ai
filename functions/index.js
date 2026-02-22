@@ -236,14 +236,14 @@ exports.startEmergencyCall = onCall(async (request) => {
     callerName, callerAge, lat, lng, address, safetyScore,
     incidentType, severity, userNotes, medicalConditions,
     emergencyContactName, emergencyContactPhone,
-    movementDirection, movementSpeed,
+    movementDirection, movementSpeed, demoPhoneNumber,
   } = p;
 
   log("info", "payload", { callerName, lat, lng, incidentType, severity });
 
   const vapiKey = env("VAPI_API_KEY");
   const phoneNumberId = env("VAPI_PHONE_NUMBER_ID");
-  const toNumber = env("DEMO_EMERGENCY_NUMBER");
+  const toNumber = demoPhoneNumber || env("DEMO_EMERGENCY_NUMBER");
 
   if (!vapiKey || !phoneNumberId || !toNumber) {
     log("error", "missing env", {
@@ -253,7 +253,7 @@ exports.startEmergencyCall = onCall(async (request) => {
     });
     throw new HttpsError(
       "failed-precondition",
-      "VAPI_API_KEY, VAPI_PHONE_NUMBER_ID, DEMO_EMERGENCY_NUMBER must be set"
+      "VAPI_API_KEY, VAPI_PHONE_NUMBER_ID, and a demo phone number must be set"
     );
   }
 

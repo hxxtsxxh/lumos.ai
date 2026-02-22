@@ -46,6 +46,7 @@ interface EmergencyCallModalProps {
   callerName?: string;
   movementDirection?: string;
   movementSpeed?: string;
+  demoPhoneNumber?: string;
 }
 
 function EmergencyCallModal({
@@ -58,6 +59,7 @@ function EmergencyCallModal({
   callerName: initialName = '',
   movementDirection,
   movementSpeed,
+  demoPhoneNumber,
 }: EmergencyCallModalProps) {
   const [step, setStep] = useState<'form' | 'countdown' | 'active'>('form');
   const [name, setName] = useState(initialName);
@@ -142,6 +144,7 @@ function EmergencyCallModal({
         userNotes: notes || undefined,
         movementDirection,
         movementSpeed,
+        demoPhoneNumber: demoPhoneNumber || undefined,
       });
       setCallId(res.callId);
       console.log('[EmergencyCallModal] Call started', { callId: res.callId });

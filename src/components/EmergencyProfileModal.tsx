@@ -180,6 +180,22 @@ export default function EmergencyProfileModal({
             </div>
           </div>
 
+          {/* Demo phone number for judges / testing */}
+          <div>
+            <Label htmlFor="ep-demo-phone">Demo call number</Label>
+            <Input
+              id="ep-demo-phone"
+              value={form.demoPhoneNumber}
+              onChange={(e) => setForm({ ...form, demoPhoneNumber: e.target.value })}
+              placeholder="+1-555-123-4567"
+              className="mt-1"
+            />
+            <p className="text-xs text-muted-foreground mt-1">
+              Enter your phone number to receive the AI emergency call yourself during testing.
+              Leave blank to use the default demo line.
+            </p>
+          </div>
+
           {/* Actions */}
           <div className="flex gap-2 pt-2">
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>

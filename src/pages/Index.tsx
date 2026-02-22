@@ -173,6 +173,7 @@ const Index = () => {
         medicalConditions: emergencyProfile.medicalConditions || undefined,
         emergencyContactName: emergencyProfile.emergencyContactName || undefined,
         emergencyContactPhone: emergencyProfile.emergencyContactPhone || undefined,
+        demoPhoneNumber: emergencyProfile.demoPhoneNumber || undefined,
       });
       setActiveCallId(res.callId);
       setCallElapsed(0);

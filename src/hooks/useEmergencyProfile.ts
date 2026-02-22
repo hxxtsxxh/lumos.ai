@@ -11,6 +11,7 @@ export interface EmergencyProfile {
   emergencyContactPhone: string;
   defaultIncidentType: string;
   defaultSeverity: string;
+  demoPhoneNumber: string;
 }
 
 const STORAGE_KEY = 'lumos_emergency_profile';
@@ -23,6 +24,7 @@ const DEFAULT_PROFILE: EmergencyProfile = {
   emergencyContactPhone: '',
   defaultIncidentType: 'being_followed',
   defaultSeverity: 'HIGH',
+  demoPhoneNumber: '',
 };
 
 export function useEmergencyProfile() {

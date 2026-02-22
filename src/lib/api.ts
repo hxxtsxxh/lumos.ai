@@ -253,6 +253,7 @@ export interface EmergencyCallPayload {
   emergencyContactPhone?: string;
   movementDirection?: string;
   movementSpeed?: string;
+  demoPhoneNumber?: string;
 }
 
 const useFirebaseEmergency =
