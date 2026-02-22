@@ -14,7 +14,9 @@
 </p>
 
 <p align="center">
-  <a href="https://lumos-safety.netlify.app"><img src="https://img.shields.io/badge/🌐_LIVE_DEMO-lumos-safety.netlify.app-FFD700?style=for-the-badge&labelColor=0d1117" alt="Live Demo"/></a>
+ <a href="https://lumos-safety.netlify.app">
+  <img src="https://img.shields.io/badge/%F0%9F%8C%90_LIVE_DEMO-lumos--safety.netlify.app-FFD700?style=for-the-badge&labelColor=0d1117" alt="Live Demo"/>
+</a>
   <a href="#-quick-start"><img src="https://img.shields.io/badge/⚡_GET_STARTED-5_Minutes-00D4AA?style=for-the-badge&labelColor=0d1117" alt="Quick Start"/></a>
 </p>
 
