@@ -191,7 +191,7 @@ export default function EmergencyProfileModal({
               className="mt-1"
             />
             <p className="text-xs text-muted-foreground mt-1">
-              Input this number to TWILIO first!
+              Input this number to TWILIO first! | This would be 911 for enterprise purposes.
             </p>
           </div>
 
