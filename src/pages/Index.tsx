@@ -19,6 +19,7 @@ import ExportReport from '@/components/ExportReport';
 import RouteSafetyPanel from '@/components/RouteSafetyPanel';
 import HeatmapLegend from '@/components/HeatmapLegend';
 import WalkWithMe from '@/components/WalkWithMe';
+import LiveIncidents from '@/components/LiveIncidents';
 
 import SafetyChatWidget from '@/components/SafetyChatWidget';
 
@@ -55,7 +56,7 @@ import { toast } from 'sonner';
 import { Bookmark, Layers, LocateFixed, Radio, RefreshCw, CircleDot, Sparkles, MapPin, BarChart3, Phone, AlertCircle, ChevronUp, ChevronDown, Map, Heart } from 'lucide-react';
 import type { TravelParams, RouteAnalysisData } from '@/types/safety';
 
-type ActivePanel = 'tips' | 'pois' | 'trends' | 'emergency' | 'report' | null;
+type ActivePanel = 'tips' | 'pois' | 'trends' | 'emergency' | 'report' | 'live' | null;
 
 type AppState = 'landing' | 'loading' | 'results';
 
@@ -1144,18 +1145,21 @@ const Index = () => {
                     })}
                     {citizenIncidents && citizenIncidents.length > 0 && (
                       <button
-                        onClick={toggleCitizenHeatmap}
+                        onClick={() => {
+                          const opening = activePanel !== 'live';
+                          setActivePanel(opening ? 'live' : null);
+                          if (opening && !showCitizenHeatmap) toggleCitizenHeatmap();
+                        }}
                         className={`flex flex-col items-center gap-0.5 sm:gap-1 px-2 sm:px-3 py-1.5 sm:py-2 rounded-xl transition-all duration-200 min-w-[48px] ${
-                          showCitizenHeatmap
+                          activePanel === 'live'
                             ? 'bg-purple-500/20 text-purple-400 scale-105'
                             : 'text-muted-foreground hover:text-foreground hover:bg-secondary/50 active:bg-secondary/70'
                         }`}
-                        aria-label="Toggle live incidents"
-                        aria-pressed={showCitizenHeatmap}
+                        aria-label="Live incidents"
                         title={`${citizenIncidents.length} live incidents nearby`}
                       >
                         <Radio className="w-4 h-4 sm:w-5 sm:h-5" />
-                        <span className={`text-[9px] sm:text-[10px] font-medium leading-none ${showCitizenHeatmap ? 'text-purple-400' : ''}`}>
+                        <span className={`text-[9px] sm:text-[10px] font-medium leading-none ${activePanel === 'live' ? 'text-purple-400' : ''}`}>
                           Live
                         </span>
                       </button>
@@ -1178,6 +1182,16 @@ const Index = () => {
                         () => showPOIPopupAt(mapRef.current!, poi),
                         { duration: 380 }
                       );
+                    }}
+                  />
+                )}
+                {citizenIncidents && citizenIncidents.length > 0 && (
+                  <LiveIncidents
+                    incidents={citizenIncidents}
+                    expanded={activePanel === 'live'}
+                    onSelectIncident={(inc) => {
+                      if (!mapRef.current) return;
+                      flyToLocation(mapRef.current, inc.lat, inc.lng, undefined, { duration: 380 });
                     }}
                   />
                 )}
@@ -1311,18 +1325,21 @@ const Index = () => {
                       })}
                       {citizenIncidents && citizenIncidents.length > 0 && (
                         <button
-                          onClick={toggleCitizenHeatmap}
+                          onClick={() => {
+                            const opening = activePanel !== 'live';
+                            setActivePanel(opening ? 'live' : null);
+                            if (opening && !showCitizenHeatmap) toggleCitizenHeatmap();
+                          }}
                           className={`flex flex-col items-center gap-0.5 px-2 py-1.5 rounded-xl transition-all duration-200 min-w-[48px] ${
-                            showCitizenHeatmap
+                            activePanel === 'live'
                               ? 'bg-purple-500/20 text-purple-400 scale-105'
                               : 'text-muted-foreground hover:text-foreground active:bg-secondary/70'
                           }`}
-                          aria-label="Toggle live incidents"
-                          aria-pressed={showCitizenHeatmap}
+                          aria-label="Live incidents"
                           title={`${citizenIncidents.length} live incidents nearby`}
                         >
                           <Radio className="w-4 h-4" />
-                          <span className={`text-[9px] font-medium leading-none ${showCitizenHeatmap ? 'text-purple-400' : ''}`}>
+                          <span className={`text-[9px] font-medium leading-none ${activePanel === 'live' ? 'text-purple-400' : ''}`}>
                             Live
                           </span>
                         </button>
@@ -1345,6 +1362,17 @@ const Index = () => {
                           () => showPOIPopupAt(mapRef.current!, poi),
                           { duration: 380 }
                         );
+                      }}
+                    />
+                  )}
+                  {citizenIncidents && citizenIncidents.length > 0 && (
+                    <LiveIncidents
+                      incidents={citizenIncidents}
+                      expanded={activePanel === 'live'}
+                      onSelectIncident={(inc) => {
+                        if (!mapRef.current) return;
+                        setMobilePanelOpen(false);
+                        flyToLocation(mapRef.current, inc.lat, inc.lng, undefined, { duration: 380 });
                       }}
                     />
                   )}
