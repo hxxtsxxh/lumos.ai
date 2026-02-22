@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Radio, Clock, AlertTriangle, Navigation, ChevronLeft, ChevronRight } from 'lucide-react';
 import type { HeatmapPoint } from '@/lib/api';
 
-const PAGE_SIZE = 10;
+const PAGE_SIZE = 7;
 
 interface LiveIncidentsProps {
   incidents: HeatmapPoint[];
