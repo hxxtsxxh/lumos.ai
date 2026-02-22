@@ -191,8 +191,7 @@ export default function EmergencyProfileModal({
               className="mt-1"
             />
             <p className="text-xs text-muted-foreground mt-1">
-              Enter your phone number to receive the AI emergency call yourself during testing.
-              Leave blank to use the default demo line.
+              Input this number to TWILIO first!
             </p>
           </div>
 
