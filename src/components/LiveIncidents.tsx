@@ -1,6 +1,9 @@
+import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Radio, Clock, AlertTriangle, Navigation } from 'lucide-react';
+import { Radio, Clock, AlertTriangle, Navigation, ChevronLeft, ChevronRight } from 'lucide-react';
 import type { HeatmapPoint } from '@/lib/api';
+
+const PAGE_SIZE = 10;
 
 interface LiveIncidentsProps {
   incidents: HeatmapPoint[];
@@ -26,11 +29,19 @@ function severityInfo(weight: number) {
 
 const LiveIncidents = ({ incidents, expanded: externalExpanded, onSelectIncident }: LiveIncidentsProps) => {
   const expanded = externalExpanded ?? false;
+  const [page, setPage] = useState(0);
+
+  // Reset page when incidents change or panel closes/opens
+  useEffect(() => { setPage(0); }, [incidents, expanded]);
 
   if (!incidents.length) return null;
 
   // Sort by most recent first
   const sorted = [...incidents].sort((a, b) => (b.ts ?? 0) - (a.ts ?? 0));
+  const totalPages = Math.ceil(sorted.length / PAGE_SIZE);
+  const pageIncidents = sorted.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+  const start = page * PAGE_SIZE + 1;
+  const end = Math.min((page + 1) * PAGE_SIZE, sorted.length);
 
   return (
     <AnimatePresence>
@@ -53,12 +64,12 @@ const LiveIncidents = ({ incidents, expanded: externalExpanded, onSelectIncident
                 Real-time
               </span>
             </div>
-            {sorted.map((incident, i) => {
+            {pageIncidents.map((incident, i) => {
               const sev = severityInfo(incident.weight);
               const handleClick = () => onSelectIncident?.(incident);
               return (
                 <motion.button
-                  key={`${incident.lat}-${incident.lng}-${i}`}
+                  key={`${incident.lat}-${incident.lng}-${page}-${i}`}
                   type="button"
                   initial={{ opacity: 0, x: -10 }}
                   animate={{ opacity: 1, x: 0 }}
@@ -92,6 +103,33 @@ const LiveIncidents = ({ incidents, expanded: externalExpanded, onSelectIncident
                 </motion.button>
               );
             })}
+
+            {/* Pagination */}
+            {totalPages > 1 && (
+              <div className="flex items-center justify-between pt-2 border-t border-border/30">
+                <button
+                  onClick={() => setPage((p) => Math.max(0, p - 1))}
+                  disabled={page === 0}
+                  className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground disabled:opacity-30 disabled:cursor-not-allowed transition-colors px-2 py-1 rounded-lg hover:bg-secondary/50"
+                  aria-label="Previous page"
+                >
+                  <ChevronLeft className="w-3.5 h-3.5" />
+                  Prev
+                </button>
+                <span className="text-[10px] sm:text-xs text-muted-foreground tabular-nums">
+                  {start}–{end} of {sorted.length}
+                </span>
+                <button
+                  onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+                  disabled={page >= totalPages - 1}
+                  className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground disabled:opacity-30 disabled:cursor-not-allowed transition-colors px-2 py-1 rounded-lg hover:bg-secondary/50"
+                  aria-label="Next page"
+                >
+                  Next
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
           </div>
         </motion.div>
       )}
