@@ -35,11 +35,38 @@ const FOG_CONFIG = {
   },
 } as const;
 
-// Module-level flag so flyToLocation can stop the rotation
+// Module-level rotation state so flyToLocation / resetToLanding can stop & restart
 let _rotationPaused = false;
+let _mapInstance: mapboxgl.Map | null = null;
+let _rafId = 0;
+let _lastRotTime = 0;
+const _ROTATION_SPEED = 0.0012; // degrees per ms
 
 export function pauseGlobeRotation() {
   _rotationPaused = true;
+  cancelAnimationFrame(_rafId);
+}
+
+function _rotateGlobe(now: number) {
+  if (!_mapInstance || !_mapInstance.getContainer().parentElement) return;
+  if (_rotationPaused) return;
+  const dt = now - _lastRotTime;
+  _lastRotTime = now;
+  if (_mapInstance.getZoom() > 3) {
+    _rafId = requestAnimationFrame(_rotateGlobe);
+    return;
+  }
+  const center = _mapInstance.getCenter();
+  center.lng -= dt * _ROTATION_SPEED;
+  _mapInstance.jumpTo({ center });
+  _rafId = requestAnimationFrame(_rotateGlobe);
+}
+
+export function resumeGlobeRotation() {
+  _rotationPaused = false;
+  _lastRotTime = performance.now();
+  cancelAnimationFrame(_rafId);
+  _rafId = requestAnimationFrame(_rotateGlobe);
 }
 
 const GlobeView = ({ onMapReady, onStyleReloaded }: GlobeViewProps) => {
@@ -76,32 +103,13 @@ const GlobeView = ({ onMapReady, onStyleReloaded }: GlobeViewProps) => {
         map.setFog(FOG_CONFIG[currentTheme] as mapboxgl.FogSpecification);
       });
 
-      let rafId: number;
-      let lastTime = performance.now();
-      const ROTATION_SPEED = 0.0012; // degrees per ms
-
+      _mapInstance = map;
       _rotationPaused = false;
-
-      const rotateGlobe = (now: number) => {
-        if (!map.getContainer().parentElement) return;
-        // If rotation is paused (flyTo in progress), skip entirely
-        if (_rotationPaused) return;
-        const dt = now - lastTime;
-        lastTime = now;
-        if (map.getZoom() > 3) {
-          rafId = requestAnimationFrame(rotateGlobe);
-          return;
-        }
-        const center = map.getCenter();
-        center.lng -= dt * ROTATION_SPEED;
-        map.jumpTo({ center });
-        rafId = requestAnimationFrame(rotateGlobe);
-      };
-      rafId = requestAnimationFrame(rotateGlobe);
+      _lastRotTime = performance.now();
+      _rafId = requestAnimationFrame(_rotateGlobe);
 
       const stopRotation = () => {
-        _rotationPaused = true;
-        cancelAnimationFrame(rafId);
+        pauseGlobeRotation();
       };
       map.on('mousedown', stopRotation);
       map.on('touchstart', stopRotation);
@@ -110,8 +118,8 @@ const GlobeView = ({ onMapReady, onStyleReloaded }: GlobeViewProps) => {
       onMapReady?.(map);
 
       return () => {
-        cancelAnimationFrame(rafId);
-        _rotationPaused = true;
+        pauseGlobeRotation();
+        _mapInstance = null;
         map.remove();
         mapRef.current = null;
       };

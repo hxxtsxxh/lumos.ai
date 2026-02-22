@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import mapboxgl from 'mapbox-gl';
-import GlobeView, { flyToLocation, pauseGlobeRotation } from '@/components/GlobeView';
+import GlobeView, { flyToLocation, pauseGlobeRotation, resumeGlobeRotation } from '@/components/GlobeView';
 import RouteSearchBar, { type SearchMode } from '@/components/RouteSearchBar';
 import ParameterPanel from '@/components/ParameterPanel';
 import SafetyDashboard from '@/components/SafetyDashboard';
@@ -398,6 +398,9 @@ const Index = () => {
       if (map.dragPan && !map.dragPan.isEnabled()) map.dragPan.enable();
       if (map.touchZoomRotate && !map.touchZoomRotate.isEnabled()) map.touchZoomRotate.enable();
       requestAnimationFrame(() => {
+        map.once('moveend', () => {
+          resumeGlobeRotation();
+        });
         map.flyTo({
           center: [0, 20],
           zoom: 1.5,
