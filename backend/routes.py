@@ -986,6 +986,7 @@ async def get_citizen_hotspots(
                 "lng": lng,
                 "weight": max(level, 1) / 5.0,
                 "type": item.get("title", "Incident"),
+                "ts": ts,
             })
         return {"incidents": incidents}
     except Exception as e:

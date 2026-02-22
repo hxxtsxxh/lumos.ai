@@ -9,6 +9,7 @@ export interface HeatmapPoint {
   type?: string;
   description?: string;
   date?: string;  // Most recent incident date in this cell/point
+  ts?: number;    // Epoch ms timestamp (Citizen live incidents)
 }
 
 export interface HourlyRiskData {

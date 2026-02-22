@@ -307,7 +307,7 @@ const Index = () => {
       if (!e.features || e.features.length === 0) return;
       map.getCanvas().style.cursor = 'pointer';
       const coordinates = (e.features[0].geometry as any).coordinates.slice();
-      const { type, weight } = e.features[0].properties as any;
+      const { type, weight, ts } = e.features[0].properties as any;
 
       while (Math.abs(e.lngLat.lng - coordinates[0]) > 180) {
         coordinates[0] += e.lngLat.lng > coordinates[0] ? 360 : -360;
@@ -315,6 +315,20 @@ const Index = () => {
 
       const severity = weight > 0.6 ? 'High' : weight > 0.3 ? 'Moderate' : 'Low';
       const sevColor = weight > 0.6 ? '#ef4444' : weight > 0.3 ? '#f59e0b' : '#a855f7';
+
+      // Compute relative time string
+      let timeAgo = '';
+      if (ts && ts > 0) {
+        const diffMs = Date.now() - ts;
+        const diffMin = Math.floor(diffMs / 60000);
+        if (diffMin < 1) timeAgo = 'Just now';
+        else if (diffMin < 60) timeAgo = `${diffMin}m ago`;
+        else {
+          const diffHr = Math.floor(diffMin / 60);
+          if (diffHr < 24) timeAgo = `${diffHr}h ${diffMin % 60}m ago`;
+          else timeAgo = `${Math.floor(diffHr / 24)}d ago`;
+        }
+      }
 
       citizenPopup
         .setLngLat(coordinates as [number, number])
@@ -324,6 +338,7 @@ const Index = () => {
             <div style="font-size: 11px; color: ${sevColor}; font-weight: 500;">
               ${severity} Severity &middot; Live Incident
             </div>
+            ${timeAgo ? `<div style="font-size: 11px; color: hsl(var(--muted-foreground)); margin-top: 2px;">&#128339; ${timeAgo}</div>` : ''}
           </div>
         `)
         .addTo(map);

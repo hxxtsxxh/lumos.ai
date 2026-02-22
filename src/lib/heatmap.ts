@@ -194,7 +194,7 @@ export function addCitizenHeatmap(map: mapboxgl.Map, points?: HeatmapPoint[]) {
   const features: GeoJSON.Feature[] = points.map((p) => ({
     type: 'Feature',
     geometry: { type: 'Point', coordinates: [p.lng, p.lat] },
-    properties: { weight: p.weight, type: p.type || 'Incident' },
+    properties: { weight: p.weight, type: p.type || 'Incident', ts: p.ts || 0 },
   }));
 
   map.addSource(CITIZEN_HEATMAP_SOURCE, {
